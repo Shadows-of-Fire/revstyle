@@ -1,0 +1,54 @@
+Fix the themed-scrollbar geometry inflation on Eclipse 2026-03+ (4.39/4.40)
+at display scales other than 100%.
+
+SWT 3.133 replaced Control.autoScaleDisabled (a boolean whose default was
+correct even when constructors are skipped) with the AutoscalingMode enum,
+initialized to ENABLED by a field initializer. DevStyle creates its scrollbar
+adapters via sun.misc.Unsafe.allocateInstance, which skips field
+initializers, so the adapter's mode is null and SWT treats it as
+"autoscaling disabled": bounds are written at the parent's zoom but read
+back at 100, inflating adapted popup scrollables by the display scale factor
+(1.5x at 150%). Dialogs like Debug Configurations get their bottom cut off
+and the scrollbar cannot reach the last items (upstream report:
+github.com/CodeTogether-Inc/CodeTogether issue #444). Copy autoscalingMode
+from the source widget before createWidget; a no-op on pre-2026-03 SWT.
+
+Target: com.genuitec.eclipse.theming.scrollbar 2025.2.0.202509301431
+Context source: the bundle jar's embedded sources (src/**, codeaffine
+FlatScrollBar, EPL-1.0). Details: docs/scrollbar-autoscaling.md
+
+--- a/com.genuitec.eclipse.theming.scrollbar/src/com/codeaffine/eclipse/swt/widget/scrollable/ScrollableAdapterFactory.java
++++ b/com.genuitec.eclipse.theming.scrollbar/src/com/codeaffine/eclipse/swt/widget/scrollable/ScrollableAdapterFactory.java
+@@ -22,6 +22,7 @@
+ import static java.util.Arrays.asList;
+ import static java.util.Collections.unmodifiableList;
+ 
++import java.lang.reflect.Field;
+ import java.util.ArrayList;
+ import java.util.Collection;
+ import java.util.List;
+@@ -147,11 +148,24 @@
+         Integer zoom = reflectionUtil.getField( scrollable, ZOOM, Integer.class );
+         reflectionUtil.setField( result, ZOOM, zoom );
+       } catch (Throwable bestEffort) {}
++      copyAutoscalingMode( scrollable, result );
+       reflectionUtil.invoke( result, CREATE_WIDGET, $( valueOf( 0 ), int.class ) );
+     }
+     return result;
+   }
+ 
++  // SWT 3.133+ (Eclipse 2026-03) initializes Control.autoscalingMode in a field
++  // initializer, which Unsafe.allocateInstance skips; a null mode makes the
++  // adapter read its bounds at zoom 100 while writing them at the parent's
++  // zoom, inflating adapted scrollables on displays scaled above 100%.
++  private static void copyAutoscalingMode( Scrollable scrollable, Scrollable result ) {
++    try {
++      Field mode = Control.class.getDeclaredField( "autoscalingMode" );
++      mode.setAccessible( true );
++      mode.set( result, mode.get( scrollable ) );
++    } catch (Throwable bestEffort) {}
++  }
++
+   private static void applyDrawingOrderOrdinalNumber( Control control, int ordinalNumber ) {
+     control.moveAbove( control.getParent().getChildren()[ ordinalNumber ] );
+   }

@@ -1,0 +1,129 @@
+Fix the CTabFolder tab-renderer NPE that makes DevStyle unusable on
+Eclipse 2026-06 (4.40).
+
+SWT 3.134 removed curved-tab support from CTabFolderRenderer, deleting the
+private fields lastTabHeight/curveWidth/curveIndent that DevStyle's
+SquareTabRenderer and DashboardSquareTabRenderer reflect into.
+ReflectionSupport.getField() returns null for them and resetCurves() then
+NPEs on setAccessible() during every CTabFolder layout, breaking workbench
+rendering (upstream report: github.com/Genuitec/community discussion #21).
+Null-guard each field; resetting curves is a no-op on an SWT without curves.
+
+Target: com.genuitec.eclipse.theming.ui 2025.2.0.202509301431
+Context source: VineFlower 1.12.0 output (--folder --use-lvt-names=1) of the
+bundle jar. Details: docs/tab-renderer-npe.md
+
+--- a/com.genuitec.eclipse.theming.ui/src/com/genuitec/eclipse/theming/ui/rendering/SquareTabRenderer.java
++++ b/com.genuitec.eclipse.theming.ui/src/com/genuitec/eclipse/theming/ui/rendering/SquareTabRenderer.java
+@@ -605,6 +605,7 @@
+    private static class CTabFolderRendererWrapper extends SquareTabRenderer.ReflectionSupport<CTabFolderRenderer> {
+       private Method drawBackgroundMethod;
+       private int localLastTabHeight = -1;
++      private boolean curveFieldsResolved;
+       private Field lastTabHeight;
+       private Field curveWidth;
+       private Field curveIndent;
+@@ -635,20 +636,39 @@
+       }
+ 
+       public void resetCurves(int curTabHeight) {
+-         if (this.lastTabHeight == null) {
++         if (!this.curveFieldsResolved) {
++            this.curveFieldsResolved = true;
++            // SWT 3.134 (Eclipse 2026-06) removed curved-tab support and with it the
++            // curve fields on CTabFolderRenderer; treat each field as optional.
+             this.lastTabHeight = this.getField("lastTabHeight");
+-            this.lastTabHeight.setAccessible(true);
++            if (this.lastTabHeight != null) {
++               this.lastTabHeight.setAccessible(true);
++            }
++
+             this.curveWidth = this.getField("curveWidth");
+-            this.curveWidth.setAccessible(true);
++            if (this.curveWidth != null) {
++               this.curveWidth.setAccessible(true);
++            }
++
+             this.curveIndent = this.getField("curveIndent");
+-            this.curveIndent.setAccessible(true);
++            if (this.curveIndent != null) {
++               this.curveIndent.setAccessible(true);
++            }
+          }
+ 
+          if (this.localLastTabHeight != curTabHeight) {
+             try {
+-               this.lastTabHeight.set(this.instance, curTabHeight);
+-               this.curveWidth.set(this.instance, 0);
+-               this.curveIndent.set(this.instance, 0);
++               if (this.lastTabHeight != null) {
++                  this.lastTabHeight.set(this.instance, curTabHeight);
++               }
++
++               if (this.curveWidth != null) {
++                  this.curveWidth.set(this.instance, 0);
++               }
++
++               if (this.curveIndent != null) {
++                  this.curveIndent.set(this.instance, 0);
++               }
+             } catch (Exception e) {
+                e.printStackTrace();
+             }
+--- a/com.genuitec.eclipse.theming.ui/src/com/genuitec/eclipse/theming/ui/rendering/DashboardSquareTabRenderer.java
++++ b/com.genuitec.eclipse.theming.ui/src/com/genuitec/eclipse/theming/ui/rendering/DashboardSquareTabRenderer.java
+@@ -596,6 +596,7 @@
+    private static class CTabFolderRendererWrapper extends DashboardSquareTabRenderer.ReflectionSupport<CTabFolderRenderer> {
+       private Method drawBackgroundMethod;
+       private int localLastTabHeight = -1;
++      private boolean curveFieldsResolved;
+       private Field lastTabHeight;
+       private Field curveWidth;
+       private Field curveIndent;
+@@ -626,20 +627,39 @@
+       }
+ 
+       public void resetCurves(int curTabHeight) {
+-         if (this.lastTabHeight == null) {
++         if (!this.curveFieldsResolved) {
++            this.curveFieldsResolved = true;
++            // SWT 3.134 (Eclipse 2026-06) removed curved-tab support and with it the
++            // curve fields on CTabFolderRenderer; treat each field as optional.
+             this.lastTabHeight = this.getField("lastTabHeight");
+-            this.lastTabHeight.setAccessible(true);
++            if (this.lastTabHeight != null) {
++               this.lastTabHeight.setAccessible(true);
++            }
++
+             this.curveWidth = this.getField("curveWidth");
+-            this.curveWidth.setAccessible(true);
++            if (this.curveWidth != null) {
++               this.curveWidth.setAccessible(true);
++            }
++
+             this.curveIndent = this.getField("curveIndent");
+-            this.curveIndent.setAccessible(true);
++            if (this.curveIndent != null) {
++               this.curveIndent.setAccessible(true);
++            }
+          }
+ 
+          if (this.localLastTabHeight != curTabHeight) {
+             try {
+-               this.lastTabHeight.set(this.instance, curTabHeight);
+-               this.curveWidth.set(this.instance, 0);
+-               this.curveIndent.set(this.instance, 0);
++               if (this.lastTabHeight != null) {
++                  this.lastTabHeight.set(this.instance, curTabHeight);
++               }
++
++               if (this.curveWidth != null) {
++                  this.curveWidth.set(this.instance, 0);
++               }
++
++               if (this.curveIndent != null) {
++                  this.curveIndent.set(this.instance, 0);
++               }
+             } catch (Exception e) {
+                e.printStackTrace();
+             }
