@@ -106,6 +106,13 @@ marker) can't be told apart from an unsigned pristine install. Your existing
 `backups/` remain valid and are what `setup` trusts; re-run
 `pack` + `deploy` once and `status` will report "patched by revstyle".
 
+## CI
+
+A weekly end-to-end workflow installs pristine DevStyle from the vendor's
+live update site onto a stock Eclipse, proves the known bug reproduces, then
+proves the revstyle pipeline fixes it — see [docs/ci.md](docs/ci.md) for the
+failure-mode table. No Genuitec bytes are ever committed, cached, or uploaded.
+
 ## Legal
 
 - This repository's automation, documentation, and diagnostic harness are MIT

@@ -1,0 +1,90 @@
+# End-to-end guard: builds a throwaway Eclipse, installs pristine DevStyle
+# from the vendor's PUBLIC update site at runtime, runs the revstyle pipeline,
+# and boots headless to verify the patch. All logic lives in ci/e2e.sh.
+#
+# Legal/invariant note (do not weaken — see CLAUDE.md "Hard invariants"):
+#   - DevStyle is fetched from Genuitec's own public p2 site onto an ephemeral
+#     runner and discarded with it. No Genuitec bytes enter git, the Actions
+#     cache, or uploaded artifacts. Artifacts are LOGS ONLY.
+#   - The Actions cache may hold ONLY the stock Eclipse EPP tarball
+#     (eclipse.org bits) and the VineFlower jar. Never cache anything
+#     downstream of the DevStyle install (the extracted eclipse/, work/,
+#     backups/, build/).
+#
+# Non-blocking by design: scheduled weekly + manual. Do NOT make this a
+# required PR check — it depends on a third party's abandoned-but-still-alive
+# update site (see docs/ci.md for the failure-mode table).
+name: e2e
+
+on:
+  push:
+    branches: [main]
+    paths:                   # only when what the e2e actually validates changes
+      - 'revstyle.sh'
+      - 'lib/**'
+      - 'patches/**'
+      - 'ci/**'
+      - '.github/workflows/e2e.yml'
+  schedule:
+    - cron: '17 5 * * 1'   # weekly, Monday 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.release }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: "2026-06"   # 4.40 — the tab-renderer NPE reproduces headlessly
+            expect_tab_npe: "1"
+          - release: "2026-03"   # 4.39 — known bug is silent geometry; pipeline + clean boot only
+            expect_tab_npe: "0"
+    env:
+      ECLIPSE_RELEASE: ${{ matrix.release }}
+      EXPECT_TAB_NPE: ${{ matrix.expect_tab_npe }}
+      REVSTYLE_CI_SCRATCH: ${{ runner.temp }}/revstyle-e2e
+      EPP_CACHE_DIR: ${{ github.workspace }}/.epp-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Cache Eclipse EPP tarball (eclipse.org bits only)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.EPP_CACHE_DIR }}
+          key: epp-java-${{ matrix.release }}-R-linux-gtk-x86_64-v1
+
+      - name: Cache VineFlower
+        uses: actions/cache@v4
+        with:
+          path: tools
+          key: vineflower-1.12.0
+
+      - name: Run end-to-end test
+        run: ci/e2e.sh
+
+      - name: Upload logs (logs only — never jars/plugins)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ matrix.release }}
+          path: ${{ runner.temp }}/revstyle-e2e/logs
+          if-no-files-found: ignore
+          retention-days: 14
