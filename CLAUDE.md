@@ -32,7 +32,13 @@ roughly every release. This file is the playbook for that event.
 2. **Diff the SWT (or other platform bundle) versions.** After an in-place
    Eclipse upgrade the previous bundle jars usually survive in `plugins/` —
    `configuration/org.eclipse.equinox.simpleconfigurator/bundles.info` is the
-   authority on which are active. Compare members with `javap -p` first, then
+   authority on which are active. On **read-only installs** (distro packages)
+   that authority lives in the per-user area
+   `~/.eclipse/<product>_<ver>_<hash>_<os_ws_arch>/configuration/` — the hash
+   is Java `String.hashCode` of the absolute install path (`java_str_hash` in
+   `lib/common.sh`); user-installed bundles sit in that area's `plugins/` and
+   are referenced by `../..`-style paths that resolve against the install
+   root. `resolve_eclipse` handles all of this; `--config` overrides. Compare members with `javap -p` first, then
    VineFlower-decompile the specific classes from both jars and diff
    (pre-create package dirs; VineFlower's `--only` saver doesn't mkdir).
 3. **Known DevStyle failure modes**, ranked by past incidents:

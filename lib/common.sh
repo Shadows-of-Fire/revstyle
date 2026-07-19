@@ -48,14 +48,59 @@ require_cmd() {
 }
 
 # ---------------------------------------------------------------- eclipse install
-# resolve_eclipse [path] — sets ECLIPSE_HOME and BUNDLES_INFO
+# java_str_hash <s> — Java String.hashCode, made non-negative. Equinox names
+# per-user configuration areas ~/.eclipse/<product>_<ver>_<hash>_<os_ws_arch>
+# using this hash of the absolute install path.
+java_str_hash() {
+  printf '%s' "$1" | od -An -tu1 -v | tr ' ' '\n' \
+    | awk 'NF{h=(h*31+$1)%4294967296} END{if(h>2147483647)h-=4294967296; if(h<0)h=-h; print h}'
+}
+
+# find_user_config_area — echoes the ~/.eclipse configuration dir belonging to
+# $ECLIPSE_HOME, or nothing. Matches by install-path hash first; falls back to
+# a behavioral probe (an area whose platform-bundle entries resolve under this
+# install) in case Equinox hashed a differently-normalized path.
+find_user_config_area() {
+  local hash area rel
+  for hash in $(java_str_hash "$ECLIPSE_HOME") $(java_str_hash "$(realpath "$ECLIPSE_HOME" 2>/dev/null || echo "$ECLIPSE_HOME")"); do
+    for area in "$HOME/.eclipse/"*"_${hash}_"*/configuration; do
+      [ -f "$area/org.eclipse.equinox.simpleconfigurator/bundles.info" ] && { printf '%s\n' "$area"; return 0; }
+    done
+  done
+  for area in "$HOME/.eclipse/"*/configuration; do
+    [ -f "$area/org.eclipse.equinox.simpleconfigurator/bundles.info" ] || continue
+    rel=$(awk -F, '!/^#/ && $3 ~ /^plugins\// {print $3; exit}' "$area/org.eclipse.equinox.simpleconfigurator/bundles.info")
+    [ -n "$rel" ] && [ -f "$ECLIPSE_HOME/$rel" ] && { printf '%s\n' "$area"; return 0; }
+  done
+  return 1
+}
+
+# resolve_eclipse [path] — sets ECLIPSE_HOME, CONFIG_AREA and BUNDLES_INFO.
+# ECLIPSE_HOME is the install area (eclipse.ini, platform plugins/). The
+# active configuration is the install's own configuration/ when writable
+# (classic layout); on read-only installs (distro-packaged Eclipse, issue #1)
+# Equinox shadows it into a per-user area under ~/.eclipse, whose bundles.info
+# is then the authority — user-installed bundles live in that area's plugins/,
+# referenced by paths that resolve relative to the install area.
 resolve_eclipse() {
   local candidate="${1:-${ECLIPSE_HOME:-}}"
   [ -n "$candidate" ] || die "no Eclipse install given. Pass --eclipse <path> or set ECLIPSE_HOME.
   Example: ./revstyle.sh --eclipse /mnt/c/eclipse setup"
   ECLIPSE_HOME="${candidate%/}"
-  BUNDLES_INFO="$ECLIPSE_HOME/configuration/org.eclipse.equinox.simpleconfigurator/bundles.info"
-  [ -f "$BUNDLES_INFO" ] || die "'$ECLIPSE_HOME' does not look like an Eclipse install (missing $BUNDLES_INFO)"
+  [ -d "$ECLIPSE_HOME/plugins" ] || die "'$ECLIPSE_HOME' does not look like an Eclipse install (no plugins/ directory)"
+  if [ -n "${ECLIPSE_CONFIG:-}" ]; then
+    CONFIG_AREA="${ECLIPSE_CONFIG%/}"
+  elif [ -w "$ECLIPSE_HOME/configuration" ]; then
+    CONFIG_AREA="$ECLIPSE_HOME/configuration"
+  else
+    CONFIG_AREA=$(find_user_config_area) || die "install at $ECLIPSE_HOME is not writable and no matching
+  per-user configuration area exists under ~/.eclipse.
+  Launch Eclipse once as this user (that creates the area), or pass the area
+  explicitly with --config <dir>, then retry."
+    log "read-only install: using per-user configuration area ${CONFIG_AREA%/configuration}"
+  fi
+  BUNDLES_INFO="$CONFIG_AREA/org.eclipse.equinox.simpleconfigurator/bundles.info"
+  [ -f "$BUNDLES_INFO" ] || die "missing $BUNDLES_INFO — not a simpleconfigurator-managed Eclipse?"
 }
 
 # bundle_info_line <bsn> — echoes the bundles.info CSV line for a symbolic name
@@ -80,10 +125,12 @@ bundle_jar() {
   esac
 }
 
-# bundle_on_disk <bsn> — a matching jar exists under plugins/, whether or not
-# bundles.info knows about it yet (p2 reconciles a new install on next launch)
+# bundle_on_disk <bsn> — a matching jar exists under the install's or the
+# user area's plugins/, whether or not bundles.info knows about it yet
+# (p2 reconciles a new install on next launch)
 bundle_on_disk() {
-  compgen -G "$ECLIPSE_HOME/plugins/${1}_*.jar" >/dev/null
+  compgen -G "$ECLIPSE_HOME/plugins/${1}_*.jar" >/dev/null && return 0
+  compgen -G "${CONFIG_AREA%/configuration}/plugins/${1}_*.jar" >/dev/null
 }
 
 check_devstyle_version() {

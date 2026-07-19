@@ -2,7 +2,11 @@
 # revstyle — repair the abandoned DevStyle plugin on modern Eclipse (2026-03+)
 # using your own installation's jars. Ships no Genuitec code; see README.md.
 #
-# Usage: ./revstyle.sh [--eclipse <path>] <command>
+# Usage: ./revstyle.sh [--eclipse <path>] [--config <dir>] <command>
+#
+# --config: the Equinox configuration area, only needed when auto-detection
+#           fails. Read-only installs (distro packages) keep it per-user
+#           under ~/.eclipse/<product>_<hash>/configuration — found for you.
 #
 # Commands:
 #   setup [--all]  fetch jars from the install, back up pristine copies,
@@ -21,7 +25,7 @@ cd "$(dirname "$0")"
 # shellcheck source=lib/common.sh
 . lib/common.sh
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # ------------------------------------------------------------ arg parsing
 ECLIPSE_ARG=""
@@ -32,6 +36,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --eclipse) shift; [ $# -gt 0 ] || die "--eclipse needs a path"; ECLIPSE_ARG=$1 ;;
     --eclipse=*) ECLIPSE_ARG=${1#--eclipse=} ;;
+    --config) shift; [ $# -gt 0 ] || die "--config needs a path"; ECLIPSE_CONFIG=$1 ;;
+    --config=*) ECLIPSE_CONFIG=${1#--config=} ;;
     --all) SETUP_ALL=1 ;;
     --force) DEPLOY_FORCE=1 ;;
     -h|--help) usage 0 ;;
@@ -42,7 +48,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$CMD" ] || usage 1
 
-require_cmd java javac jar unzip zip patch curl sha256sum awk sed
+require_cmd java javac jar unzip zip patch curl sha256sum awk sed od realpath
 resolve_eclipse "$ECLIPSE_ARG"
 
 # ------------------------------------------------------------ commands
@@ -118,9 +124,14 @@ cmd_deploy() {
     log "deployed $(basename "$jar")"
   done
   if ini=$(eclipse_ini_path) && grep -q -- "$SCROLLBAR_WORKAROUND" "$ini"; then
-    cp "$ini" "$ini.revstyle.bak"
-    sed -i "/${SCROLLBAR_WORKAROUND//\//\\/}/d" "$ini"
-    log "removed the old '$SCROLLBAR_WORKAROUND' workaround from $(basename "$ini") (backup: $(basename "$ini").revstyle.bak)"
+    if [ -w "$ini" ]; then
+      cp "$ini" "$ini.revstyle.bak"
+      sed -i "/${SCROLLBAR_WORKAROUND//\//\\/}/d" "$ini"
+      log "removed the old '$SCROLLBAR_WORKAROUND' workaround from $(basename "$ini") (backup: $(basename "$ini").revstyle.bak)"
+    else
+      warn "$ini contains the old '$SCROLLBAR_WORKAROUND' workaround but is not
+  writable (system-packaged install) — remove that line yourself, e.g. with sudo."
+    fi
   fi
   log "done. Launch Eclipse once with -clean so the OSGi cache picks up the new jars."
 }
@@ -144,6 +155,7 @@ to re-add '$SCROLLBAR_WORKAROUND' to eclipse.ini."
 
 cmd_status() {
   log "Eclipse install : $ECLIPSE_HOME"
+  [ "$CONFIG_AREA" != "$ECLIPSE_HOME/configuration" ] && log "config area     : $CONFIG_AREA"
   local bsn ver jar state backup
   for bsn in "${TARGET_BSNS[@]}"; do
     ver=$(bundle_version "$bsn" 2>/dev/null || echo "not installed")

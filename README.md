@@ -37,6 +37,13 @@ export ECLIPSE_HOME=/path/to/eclipse     # the folder containing eclipse.ini
 ./revstyle.sh deploy                     # close Eclipse first
 ```
 
+**Distro-packaged Eclipse** (e.g. Arch's `/usr/lib/eclipse`): point
+`ECLIPSE_HOME` at the system install as usual. Because it is read-only,
+Eclipse keeps your plugins and the active bundle list in a per-user area
+under `~/.eclipse/` — revstyle detects and uses it automatically (launch
+Eclipse at least once first so the area exists). `--config <dir>` overrides
+the detection if ever needed.
+
 Then start Eclipse once with `-clean` (e.g. `eclipse -clean`) so the OSGi
 cache picks up the modified bundles. Undo at any time with
 `./revstyle.sh restore`.
