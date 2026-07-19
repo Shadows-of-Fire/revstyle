@@ -131,6 +131,9 @@ cmd_restore() {
     jar=$(bundle_jar "$bsn")
     backup="$BACKUPS_DIR/$(basename "$jar")"
     [ -f "$backup" ] || die "no backup for $bsn in $BACKUPS_DIR"
+    if is_revstyle_patched "$backup"; then
+      die "backup '$backup' is a revstyle-patched jar — refusing to restore it as pristine"
+    fi
     cp "$backup" "$jar"
     log "restored pristine $(basename "$jar")"
   done
@@ -145,11 +148,21 @@ cmd_status() {
   for bsn in "${TARGET_BSNS[@]}"; do
     ver=$(bundle_version "$bsn" 2>/dev/null || echo "not installed")
     if [ "$ver" = "not installed" ]; then
-      log "$bsn : not installed"
+      if bundle_on_disk "$bsn"; then
+        log "$bsn : on disk but not in bundles.info — launch Eclipse once so p2 reconciles, then retry"
+      else
+        log "$bsn : not installed"
+      fi
       continue
     fi
     jar=$(bundle_jar "$bsn")
-    if is_pristine "$jar"; then state="pristine"; else state="patched (signature stripped)"; fi
+    if is_revstyle_patched "$jar"; then
+      state="patched by revstyle"
+    elif has_signature "$jar"; then
+      state="pristine (signed)"
+    else
+      state="pristine (unsigned)"
+    fi
     backup="$BACKUPS_DIR/$(basename "$jar")"
     [ -f "$backup" ] && state="$state, backup present"
     log "$bsn : $ver — $state"

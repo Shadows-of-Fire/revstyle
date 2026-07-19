@@ -54,7 +54,7 @@ int computeBoundsZoom() {    // WRITE path: parent's real zoom, e.g. 150
 
 Bounds are **written** ×(zoom/100) but **read back** ×1.0 — at 150% display
 scale every layout pass inflates the adapted widget by 1.5×. Measured with a
-standalone harness (`probe/`) driving the real DevStyle adapter code on a
+standalone probe harness driving the real DevStyle adapter code on a
 150% display:
 
 | | SWT 3.132 (4.38) | SWT 3.134 (4.40) | SWT 3.134 + fix |

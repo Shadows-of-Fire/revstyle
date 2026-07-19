@@ -51,7 +51,7 @@ release breaks something new.
 ```
 your Eclipse install                     this repo
 ────────────────────                     ─────────
-plugins/com.genuitec…jar ──backup──▶ backups/   (pristine, signature intact)
+plugins/com.genuitec…jar ──backup──▶ backups/   (pristine copy)
         │
         ├─ theming.ui:        VineFlower 1.12.0 ──▶ work/<bundle>/src/
         └─ theming.scrollbar: embedded src/**   ──▶ work/<bundle>/src/
@@ -71,7 +71,10 @@ Notes on the mechanics:
   any class would fail signature verification, so the repack removes
   `META-INF/CODETOGE.SF/.RSA` and the per-entry digests. Equinox loads
   unsigned bundles normally. The `Bundle-SymbolicName`/`Bundle-Version` and
-  file name stay identical, so p2 metadata remains consistent.
+  file name stay identical, so p2 metadata remains consistent. Some installs
+  ship these jars unsigned in the first place — then there is nothing to
+  strip. Repacked jars are identified by a `Revstyle-Patched: true` manifest
+  attribute, not by the missing signature.
 - **Determinism:** the theming.ui patch applies to VineFlower **1.12.0**
   output produced with pinned flags; the tool verifies the decompiler jar by
   SHA-256. The scrollbar patch applies to sources the jar itself embeds.
@@ -96,6 +99,12 @@ classes, and you built them locally.
 **A different DevStyle/Eclipse version?** The patches target DevStyle
 2025.2.0.202509301431 on Eclipse 2026-03/2026-06 exactly. Other combinations
 fail fast with a clear error rather than half-applying.
+
+**`status` says "pristine (unsigned)" but I deployed patched jars earlier.**
+Jars deployed by an older revstyle (before the `Revstyle-Patched` manifest
+marker) can't be told apart from an unsigned pristine install. Your existing
+`backups/` remain valid and are what `setup` trusts; re-run
+`pack` + `deploy` once and `status` will report "patched by revstyle".
 
 ## Legal
 
