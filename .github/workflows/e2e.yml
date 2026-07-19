@@ -52,7 +52,9 @@ jobs:
     env:
       ECLIPSE_RELEASE: ${{ matrix.release }}
       EXPECT_TAB_NPE: ${{ matrix.expect_tab_npe }}
-      REVSTYLE_CI_SCRATCH: ${{ runner.temp }}/revstyle-e2e
+      # REVSTYLE_CI_SCRATCH is not set here: the `runner` context doesn't
+      # exist in job-level env. ci/e2e.sh defaults it to $RUNNER_TEMP/revstyle-e2e,
+      # which is the same location the artifact step reads via ${{ runner.temp }}.
       EPP_CACHE_DIR: ${{ github.workspace }}/.epp-cache
     steps:
       - uses: actions/checkout@v4
@@ -78,7 +80,9 @@ jobs:
           key: vineflower-1.12.0
 
       - name: Run end-to-end test
-        run: ci/e2e.sh
+        # bash explicitly: immune to the exec bit getting lost on the
+        # maintainer's drvfs checkout (mode changes don't survive there)
+        run: bash ci/e2e.sh
 
       - name: Upload logs (logs only — never jars/plugins)
         if: always()
