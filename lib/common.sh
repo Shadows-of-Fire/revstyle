@@ -264,7 +264,19 @@ compile_unit() {
   rm -rf "$out"
   mkdir -p "$out"
   cp=$(classpath_for "$(backup_jar_path "$bsn")")
-  javac --release 8 -nowarn -encoding UTF-8 -cp "$cp" -d "$out" "${files[@]}" \
+  # The classpath spans ~1000 active bundle jars (~128 KiB), which exceeds the
+  # OS single-argument limit (Linux MAX_ARG_STRLEN, 128 KiB) once ECLIPSE_HOME's
+  # absolute prefix is applied to each entry — so javac dies with "Argument list
+  # too long". Feed it via an @argfile instead. Paths are double-quoted to
+  # tolerate spaces; they use forward slashes, so backslash-escaping never bites.
+  local argfile="$BUILD_DIR/$bsn.javac.args"
+  {
+    printf -- '--release 8 -nowarn -encoding UTF-8\n'
+    printf -- '-classpath "%s"\n' "$cp"
+    printf -- '-d "%s"\n' "$out"
+    for s in "${files[@]}"; do printf -- '"%s"\n' "$s"; done
+  } > "$argfile"
+  javac "@$argfile" \
     || die "compilation failed for $bsn (did 'apply' succeed? is the Eclipse install the version the patches target?)"
   produced=$(find "$out" -name '*.class' | wc -l)
   [ "$produced" -eq "$expected" ] || die "$bsn produced $produced class files, expected $expected — decompiler or source drift"
