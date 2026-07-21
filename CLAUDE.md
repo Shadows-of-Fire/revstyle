@@ -112,6 +112,14 @@ roughly every release. This file is the playbook for that event.
 - `eclipse_running` uses `pgrep -x`; a `-f` substring match catches your own
   command line. It asks Windows (`tasklist.exe`) only when `ECLIPSE_HOME` is
   under `/mnt/*` — a Windows Eclipse can't hold a Linux install's files.
+- **Never put the bundle classpath on javac's command line.** A modern Eclipse
+  has ~1000 active bundles, so `classpath_for` builds a single `-cp` string of
+  ~128 KiB — past Linux's per-argument cap (`MAX_ARG_STRLEN`, 131072 bytes),
+  and the `/mnt/c/...` prefix under WSL2 tips it over even when the `C:/...`
+  measurement looks safe. Symptom: `javac: Argument list too long`, unrelated
+  to the (tiny) source-file list. `compile_unit` writes an `@argfile` instead;
+  keep it that way. Quote paths in the argfile (spaces in `ECLIPSE_HOME`) and
+  keep them forward-slashed so backslash-escaping never bites.
 
 ## Verification bar
 
