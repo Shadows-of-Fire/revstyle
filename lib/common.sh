@@ -13,6 +13,11 @@ TARGET_BSNS=("$UI_BSN" "$SB_BSN")
 # its presence is the sole discriminator of patched vs pristine jars.
 REVSTYLE_MARKER='Revstyle-Patched'
 
+# Timestamp pinned onto the entries pack_bundle rewrites (the DevStyle release
+# stamp, 202509301431 UTC) — keeps repacks free of wall-clock so rebuilds
+# stay byte-identical.
+PACK_MTIME='2025-09-30T14:31:00Z'
+
 VF_VERSION="1.12.0"
 VF_URL="https://github.com/Vineflower/vineflower/releases/download/${VF_VERSION}/vineflower-${VF_VERSION}.jar"
 VF_SHA256="1dfcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d"
@@ -46,6 +51,21 @@ require_cmd() {
     command -v "$c" >/dev/null 2>&1 || die "required command '$c' not found on PATH"
   done
 }
+
+# ---------------------------------------------------------------- platform shim
+# Git Bash (MSYS) drives a *native Windows* JDK: MSYS auto-converts POSIX paths
+# on the argv of native executables, but NOT inside javac @argfiles (issue #3),
+# and drive colons in classpath lists suppress list conversion entirely. So we
+# never rely on auto-conversion: bash-side tools (unzip, patch, cp, find) keep
+# MSYS paths, and every path handed to a native JVM tool goes through
+# native_path. cygpath -m yields C:/mixed form — never contains backslashes, so
+# it is safe on argv and double-quoted inside argfiles alike.
+case "${OSTYPE:-}" in
+  msys|cygwin) IS_MSYS=1; CP_SEP=';' ;;
+  *)           IS_MSYS=0; CP_SEP=':' ;;
+esac
+is_msys() { [ "$IS_MSYS" = 1 ]; }
+native_path() { if is_msys; then cygpath -m -- "$1"; else printf '%s\n' "$1"; fi; }
 
 # ---------------------------------------------------------------- eclipse install
 # java_str_hash <s> — Java String.hashCode, made non-negative. Equinox names
@@ -86,6 +106,9 @@ resolve_eclipse() {
   local candidate="${1:-${ECLIPSE_HOME:-}}"
   [ -n "$candidate" ] || die "no Eclipse install given. Pass --eclipse <path> or set ECLIPSE_HOME.
   Example: ./revstyle.sh --eclipse /mnt/c/eclipse setup"
+  # under Git Bash accept C:/eclipse, C:\eclipse or /c/eclipse — normalize to
+  # the MSYS form so all bash-side logic sees exactly one shape
+  if is_msys; then candidate=$(cygpath -u -- "$candidate"); fi
   ECLIPSE_HOME="${candidate%/}"
   [ -d "$ECLIPSE_HOME/plugins" ] || die "'$ECLIPSE_HOME' does not look like an Eclipse install (no plugins/ directory)"
   if [ -n "${ECLIPSE_CONFIG:-}" ]; then
@@ -213,7 +236,8 @@ ensure_vineflower() {
 decompile_jar() {
   local jar=$1 out=$2
   mkdir -p "$out"
-  java -jar "$VF_JAR" "${VF_FLAGS[@]}" "$jar" "$out/" > /dev/null 2>&1 \
+  java -jar "$(native_path "$VF_JAR")" "${VF_FLAGS[@]}" \
+    "$(native_path "$jar")" "$(native_path "$out")/" > /dev/null 2>&1 \
     || die "VineFlower failed on $jar"
   find "$out" -type f ! -name '*.java' -delete
   find "$out" -type d -empty -delete 2>/dev/null || true
@@ -247,10 +271,15 @@ extract_bundle_project() {
 # classpath_for <pristine-jar> — pristine target jar first (unpatched classes
 # resolve from it), then every active bundle jar from bundles.info
 classpath_for() {
-  local first=$1
+  # entries in native form with the platform separator — this string is consumed
+  # by javac (a native tool under Git Bash); bundles.info paths are relative, so
+  # only the two absolute prefixes need converting
+  local first ecl
+  first=$(native_path "$1")
+  ecl=$(native_path "$ECLIPSE_HOME")
   {
     printf '%s' "$first"
-    awk -F, -v ecl="$ECLIPSE_HOME" '!/^#/ && $3 ~ /\.jar$/ {printf ":%s/%s", ecl, $3}' "$BUNDLES_INFO"
+    awk -F, -v ecl="$ecl" -v sep="$CP_SEP" '!/^#/ && $3 ~ /\.jar$/ {printf "%s%s/%s", sep, ecl, $3}' "$BUNDLES_INFO"
   }
 }
 
@@ -269,14 +298,16 @@ compile_unit() {
   # absolute prefix is applied to each entry — so javac dies with "Argument list
   # too long". Feed it via an @argfile instead. Paths are double-quoted to
   # tolerate spaces; they use forward slashes, so backslash-escaping never bites.
+  # Everything written INTO the argfile must be native form: MSYS converts argv
+  # of native executables but never argfile contents (issue #3).
   local argfile="$BUILD_DIR/$bsn.javac.args"
   {
     printf -- '--release 8 -nowarn -encoding UTF-8\n'
     printf -- '-classpath "%s"\n' "$cp"
-    printf -- '-d "%s"\n' "$out"
-    for s in "${files[@]}"; do printf -- '"%s"\n' "$s"; done
+    printf -- '-d "%s"\n' "$(native_path "$out")"
+    for s in "${files[@]}"; do printf -- '"%s"\n' "$(native_path "$s")"; done
   } > "$argfile"
-  javac "@$argfile" \
+  javac "@$(native_path "$argfile")" \
     || die "compilation failed for $bsn (did 'apply' succeed? is the Eclipse install the version the patches target?)"
   produced=$(find "$out" -name '*.class' | wc -l)
   [ "$produced" -eq "$expected" ] || die "$bsn produced $produced class files, expected $expected — decompiler or source drift"
@@ -303,11 +334,22 @@ pack_bundle() {
   # stays inside the main section; no timestamps — repacks must be deterministic
   unzip -p "$out" META-INF/MANIFEST.MF | sed -n '/^\r*$/q;p' > "$manifest"
   printf '%s: true\r\n' "$REVSTYLE_MARKER" >> "$manifest"
-  # globs, not the CODETOGE literals: unsigned pristine jars have no signature
-  # entries, and MANIFEST.MF always matching keeps zip -d from exiting 12
-  zip -q -d "$out" 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/MANIFEST.MF'
-  jar --update --file "$out" --manifest "$manifest"
-  (cd "$classes" && jar --update --file "$out" "$subdir"/*.class)
+  # suffix matches, not the CODETOGE literals: unsigned pristine jars have no
+  # signature entries (fine), but MANIFEST.MF must exist — the helper dies when
+  # it doesn't (a corrupt jar). Java helper, not zip -d: stock Git Bash has no
+  # zip(1), and the JDK is already a hard requirement.
+  java "$(native_path "$REPO_DIR/lib/StripSignatures.java")" "$(native_path "$out")" \
+    || die "signature strip failed for $bsn"
+  jar --update --file "$(native_path "$out")" --manifest "$(native_path "$manifest")"
+  (cd "$classes" && jar --update --file "$(native_path "$out")" "$subdir"/*.class)
+  # jar stamps the manifest entry with "now" and class entries with build
+  # mtimes — pin exactly the entries we rewrote so repacks carry no wall-clock
+  # (see PACK_MTIME); untouched pristine entries keep their original headers
+  local pin=(META-INF/MANIFEST.MF) f
+  for f in "$classes/$subdir"/*.class; do pin+=("$subdir/$(basename "$f")"); done
+  java -Duser.timezone=UTC "$(native_path "$REPO_DIR/lib/PinEntryTimes.java")" \
+    "$(native_path "$out")" "$PACK_MTIME" "${pin[@]}" \
+    || die "timestamp pinning failed for $bsn"
   # sanity
   # NB: no `grep -q` after a pipe anywhere here — with pipefail, -q's early
   # exit SIGPIPEs the producer and corrupts the pipeline's status.
@@ -323,7 +365,15 @@ pack_bundle() {
 
 # ---------------------------------------------------------------- misc state
 eclipse_running() {
-  # Best-effort. WSL: ask Windows, but only when the target install is a
+  # Best-effort. Git Bash: the install is always a Windows one and stock Git
+  # Bash has no pgrep, so tasklist is authoritative. MSYS mangles /FI-style
+  # args into paths — suppress conversion for this one call.
+  if is_msys; then
+    MSYS2_ARG_CONV_EXCL='*' tasklist.exe /FI "IMAGENAME eq eclipse.exe" /NH 2>/dev/null \
+      | grep -i eclipse.exe >/dev/null && return 0
+    return 1
+  fi
+  # WSL: ask Windows, but only when the target install is a
   # Windows one (/mnt/*) — a Windows Eclipse can't hold a Linux install's files
   case "$ECLIPSE_HOME" in
     /mnt/*)

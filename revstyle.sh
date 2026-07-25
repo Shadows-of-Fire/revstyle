@@ -48,7 +48,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$CMD" ] || usage 1
 
-require_cmd java javac jar unzip zip patch curl sha256sum awk sed od realpath
+require_cmd java javac jar unzip patch curl sha256sum awk sed od realpath
+if is_msys; then require_cmd cygpath; fi
 resolve_eclipse "$ECLIPSE_ARG"
 
 # ------------------------------------------------------------ commands

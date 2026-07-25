@@ -1,0 +1,7 @@
+# A Windows checkout with core.autocrlf=true (the GitHub windows-runner default)
+# would CRLF-mangle the shell scripts ("\r: command not found") and the patch
+# context lines (patch -p1 stops matching the LF work-tree files). Pin LF.
+* text=auto eol=lf
+# patches must ship byte-exact — no text mangling of any kind
+*.patch -text
+*.jar binary
