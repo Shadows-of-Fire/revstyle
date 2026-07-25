@@ -120,6 +120,24 @@ roughly every release. This file is the playbook for that event.
   to the (tiny) source-file list. `compile_unit` writes an `@argfile` instead;
   keep it that way. Quote paths in the argfile (spaces in `ECLIPSE_HOME`) and
   keep them forward-slashed so backslash-escaping never bites.
+- **Git Bash (MSYS) rules** (issue #3): MSYS auto-converts POSIX paths on the
+  *argv* of native executables but never inside `@argfile` contents, and a
+  drive colon anywhere in a `:`-joined classpath suppresses list conversion
+  entirely. So never rely on auto-conversion — every path handed to a native
+  JVM tool goes through `native_path` (`cygpath -m` → `C:/mixed`, the one form
+  Windows JVM tools accept on argv *and* in argfiles), and the classpath joins
+  with `$CP_SEP` (`;` on MSYS). Stock Git Bash has no `zip`/`pgrep`:
+  signature stripping is `lib/StripSignatures.java` (the MANIFEST.MF-always-
+  present invariant still anchors its no-op error check) and process probes go
+  through `tasklist.exe`/`taskkill.exe` — with `MSYS2_ARG_CONV_EXCL='*'`, or
+  MSYS mangles `/FI`-style flags into paths. `.gitattributes` pins LF: without
+  it an `autocrlf=true` checkout CRLF-breaks both the scripts and patch
+  context matching.
+- **Repacks are wall-clock-free**: `jar --update` stamps the manifest entry
+  with "now" and class entries with build mtimes, so `pack_bundle` pins the
+  rewritten entries to `PACK_MTIME` via `lib/PinEntryTimes.java`
+  (`-Duser.timezone=UTC` — zip DOS times are local-time encoded). CI asserts
+  pack-twice determinism on every leg; don't reintroduce timestamps.
 
 ## Verification bar
 
@@ -142,6 +160,11 @@ holding `eclipse.ini` and `configuration/`. Useful patterns by setup:
 - **Native Linux** (incl. WSLg): `./eclipse -data <ws> -clean` from the
   install dir, kill with `pkill -x eclipse`. Wayland sessions log a benign
   DevStyle advisory suggesting `WEBKIT_DISABLE_COMPOSITING_MODE=1`.
+- **Git Bash on Windows**: needs a Windows JDK on `PATH`
+  (`export PATH="/c/Program Files/Eclipse Adoptium/<jdk>/bin:$PATH"`);
+  `ECLIPSE_HOME` accepts `C:/…`, `C:\…`, or `/c/…`. Use `eclipsec.exe` when
+  the process must stay attached to the shell (`eclipse.exe` detaches);
+  kill via `taskkill.exe`. See docs/windows-git-bash.md.
 - Verify on both toolkits when you can — win32 and GTK diverge in SWT
   internals, and a fix that is silent in one can misbehave in the other.
   The same DevStyle jars (signed, byte-identical) ship on both platforms.

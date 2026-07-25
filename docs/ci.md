@@ -39,10 +39,16 @@ after quiet stretches (GitHub emails a warning first).
 
 ## Matrix
 
-| Release | Negative control | Why |
-|---|---|---|
-| 2026-06 (4.40) | yes | the tab-renderer NPE reproduces headlessly in a fresh workspace |
-| 2026-03 (4.39) | no | its known bug is silent geometry ([scrollbar autoscaling](scrollbar-autoscaling.md)) — invisible in logs, so only pipeline + clean boot are assertable |
+| Runner | Release | Negative control | Why |
+|---|---|---|---|
+| ubuntu-latest | 2026-06 (4.40) | yes | the tab-renderer NPE reproduces headlessly in a fresh workspace |
+| ubuntu-latest | 2026-03 (4.39) | no | its known bug is silent geometry ([scrollbar autoscaling](scrollbar-autoscaling.md)) — invisible in logs, so only pipeline + clean boot are assertable |
+| windows-latest | 2026-06 (4.40) | yes | the Git Bash leg (`shell: bash` on windows runners IS Git Bash — the exact environment of issue #3); win32 EPP zip, `eclipsec.exe` launcher, real desktop session instead of xvfb. Also proves the repacked jars load on win32 SWT ([windows-git-bash.md](windows-git-bash.md)) |
+
+Every leg additionally asserts **repack determinism** (two `pack` runs must
+be byte-identical). The windows leg accepts `E2E_BOOT=0` as a flake escape
+hatch: pipeline/status/determinism asserts only, boots skipped — flip it in
+the workflow env if GUI boots prove unstable on the runners.
 
 ## Invariants (mirrors CLAUDE.md)
 
@@ -61,7 +67,8 @@ Every failure exits with a bracketed stage tag in the job summary:
 | `[download-failed]` | eclipse.org tarball/checksum problems | Usually transient; re-run. Persistent → EPP layout changed, update `EPP_URL` in `ci/e2e.sh` |
 | `[director-failed]` | p2 director couldn't install DevStyle | Read `p2-director.log` in the artifacts; may be the vendor-site family in disguise |
 | `[version-mismatch]` | Installed DevStyle isn't `DEVSTYLE_VERSION` | The vendor site's content changed — investigate before trusting anything |
-| `[boot-crashed]` / `[boot-timeout]` | Eclipse died or hung before writing a workspace log | Read the `*-launcher.log` artifact; likely runner/environment trouble |
+| `[boot-crashed]` / `[boot-timeout]` | Eclipse died or hung before writing a workspace log | Read the `*-launcher.log` artifact; likely runner/environment trouble. On windows-latest also suspect Defender slowness (first-boot jar scans) — re-run before digging; recurrent → set `E2E_BOOT=0` |
+| `[pack-nondeterministic]` | Two `pack` runs differed | A wall-clock leak in the repack path (see `lib/PinEntryTimes.java`); compare the `pack*.sha256` artifacts |
 | `[negative-control-failed]` | Pristine DevStyle no longer exhibits the known bug | **Fix the harness first** — green positives are untrustworthy until it detects the bug again |
 | `[pipeline-failed]` | `revstyle.sh all`/`deploy` failed | A real revstyle regression; reproduce locally |
 | `[deploy-not-patched]` | `status` doesn't report the bundles as patched | Marker/deploy logic regression; see `status.txt` artifact |
@@ -71,7 +78,10 @@ Every failure exits with a bracketed stage tag in the job summary:
 
 Run from a scratch worktree (the pipeline writes `work/ build/ backups/
 tools/` into the repo dir it runs from), with no Eclipse of your own running
-(the script `pkill`s stray `eclipse` processes between sessions):
+(the script `pkill`s stray `eclipse` processes between sessions — and under
+Git Bash the teardown is `taskkill /IM eclipse.exe /F`, which kills **every**
+Eclipse on the machine, yours included; never run it locally on Windows with
+an Eclipse open):
 
 ```sh
 git worktree add /tmp/revstyle-ci-wt HEAD

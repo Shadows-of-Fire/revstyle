@@ -25,8 +25,11 @@ Upstream reports: [Genuitec/community#21](https://github.com/Genuitec/community/
 
 - DevStyle **2025.2.0.202509301431** installed (the final release, Sept 2025).
   The patches are version-specific and the tooling verifies this.
-- A JDK 17+ (`java`, `javac`, `jar`) plus `bash`, `unzip`, `zip`, `patch`,
-  `curl`, `sha256sum`. On Windows, run from **WSL** or **Git Bash**.
+- A JDK 17+ (`java`, `javac`, `jar`) plus `bash`, `unzip`, `patch`,
+  `curl`, `sha256sum`. On Windows, run from **WSL** or **Git Bash** — stock
+  Git for Windows has everything needed as long as a Windows JDK is on
+  `PATH`; under Git Bash `ECLIPSE_HOME` may be written as `C:/eclipse`,
+  `C:\eclipse`, or `/c/eclipse`.
 - Internet access on first run (downloads VineFlower 1.12.0, SHA-256 pinned).
 
 ## Quickstart
@@ -117,7 +120,8 @@ marker) can't be told apart from an unsigned pristine install. Your existing
 
 A weekly end-to-end workflow installs pristine DevStyle from the vendor's
 live update site onto a stock Eclipse, proves the known bug reproduces, then
-proves the revstyle pipeline fixes it — see [docs/ci.md](docs/ci.md) for the
+proves the revstyle pipeline fixes it — on Linux (GTK) and on a Windows
+runner under Git Bash (win32) — see [docs/ci.md](docs/ci.md) for the
 failure-mode table. No Genuitec bytes are ever committed, cached, or uploaded.
 
 ## Legal
