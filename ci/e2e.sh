@@ -314,6 +314,9 @@ assert_positive_clean() {
   #   - Oomph "No more handles ... no underlying browser" + NotificationViewPart cast
   #   - jface "Cannot bind to an undefined command" warning
   #   - DevStyle Wayland advisory (absent under X11; belt-and-braces)
+  #   - win32: DevStyle's startup Defender probe shells out to wmic, which
+  #     modern Windows (and the runners) no longer ships — severity-4 noise
+  #     from the vendor's own code, unrelated to the patched bundles
   awk '
     function flush() { if (bad && !ok) printf "%s", blk; blk=""; bad=0; ok=0 }
     /^!(SESSION|ENTRY)/ { flush() }
@@ -321,7 +324,7 @@ assert_positive_clean() {
       blk = blk $0 "\n"
       if ($0 ~ /NullPointerException|NoSuchField|NoSuchMethod|LinkageError|Unhandled event loop|lastTabHeight/) bad=1
       if ($0 ~ /^!ENTRY com\.genuitec\.[^ ]+ 4 /) bad=1
-      if ($0 ~ /No more handles because there is no underlying browser available|Cannot bind to an undefined command|WEBKIT_DISABLE_COMPOSITING_MODE|NotificationViewPart/) ok=1
+      if ($0 ~ /No more handles because there is no underlying browser available|Cannot bind to an undefined command|WEBKIT_DISABLE_COMPOSITING_MODE|NotificationViewPart|wmic Windows Defender check failed|WindowsDefenderChecker/) ok=1
     }
     END { flush() }
   ' "$WS_PATCHED/.metadata/.log" > "$LOGS_DIR/positive-failures.txt"
