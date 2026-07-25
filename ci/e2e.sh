@@ -24,6 +24,12 @@
 #   DEVSTYLE_REPO        p2 repo URL (override to fault-inject a dead site)
 #   SETTLE_SECONDS       soak time after the workspace log appears (100)
 #   BOOT_TIMEOUT         max seconds to wait for the workspace log (180)
+#   E2E_BOOT             0 = skip the boot stages (negative control + patched
+#                        boot); pipeline/status/determinism asserts only. The
+#                        flake escape hatch for the windows-latest leg.
+#
+# Runs on linux runners (xvfb boots) and windows-latest under Git Bash (real
+# desktop session; win32 EPP zip; eclipsec.exe so the launcher stays attached).
 #
 # Every failure exits via die "[stage-tag] ..." — the tags are documented in
 # docs/ci.md so a red run is diagnosable from the job summary alone.
@@ -41,14 +47,23 @@ unset ECLIPSE_HOME
 # ------------------------------------------------------------ configuration
 [ -n "${ECLIPSE_RELEASE:-}" ] || die "ECLIPSE_RELEASE is required (e.g. 2026-06)"
 EXPECT_TAB_NPE="${EXPECT_TAB_NPE:-0}"
+E2E_BOOT="${E2E_BOOT:-1}"
 REVSTYLE_CI_SCRATCH="${REVSTYLE_CI_SCRATCH:-${RUNNER_TEMP:-$(mktemp -d)}/revstyle-e2e}"
+# windows runners hand us RUNNER_TEMP as D:\a\_temp — bash-side logic needs it
+# in MSYS form (native_path converts back at the native-tool boundaries)
+if is_msys; then REVSTYLE_CI_SCRATCH=$(cygpath -u -- "$REVSTYLE_CI_SCRATCH"); fi
 EPP_CACHE_DIR="${EPP_CACHE_DIR:-$REVSTYLE_CI_SCRATCH/downloads}"
+if is_msys; then EPP_CACHE_DIR=$(cygpath -u -- "$EPP_CACHE_DIR"); fi
 DEVSTYLE_REPO="${DEVSTYLE_REPO:-https://www.genuitec.com/updates/devstyle/ci/}"
 SETTLE_SECONDS="${SETTLE_SECONDS:-100}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-180}"
 
 RELEASE_REPO="https://download.eclipse.org/releases/${ECLIPSE_RELEASE}"
-EPP_NAME="eclipse-java-${ECLIPSE_RELEASE}-R-linux-gtk-x86_64.tar.gz"
+if is_msys; then
+  EPP_NAME="eclipse-java-${ECLIPSE_RELEASE}-R-win32-x86_64.zip"
+else
+  EPP_NAME="eclipse-java-${ECLIPSE_RELEASE}-R-linux-gtk-x86_64.tar.gz"
+fi
 EPP_URL="https://download.eclipse.org/technology/epp/downloads/release/${ECLIPSE_RELEASE}/R/${EPP_NAME}"
 # IU name read from a real install's p2 profile registry (pulls every
 # com.genuitec.eclipse.theming.* bundle revstyle targets)
@@ -58,6 +73,35 @@ ECLIPSE_HOME="$REVSTYLE_CI_SCRATCH/eclipse"
 LOGS_DIR="$REVSTYLE_CI_SCRATCH/logs"
 WS_PRISTINE="$REVSTYLE_CI_SCRATCH/ws-pristine"
 WS_PATCHED="$REVSTYLE_CI_SCRATCH/ws-patched"
+
+# Launcher: eclipse.exe is a GUI-subsystem exe that detaches from bash
+# immediately, which would break the $boot_pid liveness checks — eclipsec.exe
+# (console variant, same workbench) stays attached. Linux launcher is fine.
+if is_msys; then
+  ECLIPSE_LAUNCHER="$ECLIPSE_HOME/eclipsec.exe"
+else
+  ECLIPSE_LAUNCHER="$ECLIPSE_HOME/eclipse"
+fi
+
+# Process probes: stock Git Bash has no pgrep/pkill; tasklist/taskkill are the
+# authority there (both launcher names, belt-and-braces). MSYS mangles /-args
+# into paths, hence MSYS2_ARG_CONV_EXCL.
+eclipse_alive() {
+  if is_msys; then
+    MSYS2_ARG_CONV_EXCL='*' tasklist.exe /FI "IMAGENAME eq eclipsec.exe" /NH 2>/dev/null | grep -i eclipsec.exe >/dev/null && return 0
+    MSYS2_ARG_CONV_EXCL='*' tasklist.exe /FI "IMAGENAME eq eclipse.exe"  /NH 2>/dev/null | grep -i eclipse.exe  >/dev/null && return 0
+    return 1
+  fi
+  pgrep -x eclipse >/dev/null 2>&1
+}
+kill_eclipse() {  # kill_eclipse [force] — force is implicit on MSYS (taskkill /F)
+  if is_msys; then
+    MSYS2_ARG_CONV_EXCL='*' taskkill.exe /IM eclipsec.exe /F >/dev/null 2>&1 || true
+    MSYS2_ARG_CONV_EXCL='*' taskkill.exe /IM eclipse.exe  /F >/dev/null 2>&1 || true
+    return 0
+  fi
+  if [ "${1:-}" = force ]; then pkill -9 -x eclipse 2>/dev/null || true; else pkill -x eclipse || true; fi
+}
 
 # The exact 4.40 bug signature (docs/tab-renderer-npe.md)
 NPE_SIG='Cannot invoke "java.lang.reflect.Field.setAccessible(boolean)" because "this.lastTabHeight" is null'
@@ -70,13 +114,13 @@ summary() {
 # ------------------------------------------------------------ cleanup
 cleanup() {
   local i
-  if pgrep -x eclipse >/dev/null 2>&1; then
-    pkill -x eclipse || true
+  if eclipse_alive; then
+    kill_eclipse
     for i in $(seq 1 20); do
-      pgrep -x eclipse >/dev/null 2>&1 || break
+      eclipse_alive || break
       sleep 1
     done
-    pkill -9 -x eclipse 2>/dev/null || true
+    kill_eclipse force
   fi
   # Evidence must survive early death. Logs only — never plugin bytes.
   mkdir -p "$LOGS_DIR"
@@ -127,13 +171,17 @@ fetch_epp() {
 
 extract_eclipse() {
   rm -rf "$ECLIPSE_HOME"
-  tar -xzf "$EPP_CACHE_DIR/$EPP_NAME" -C "$REVSTYLE_CI_SCRATCH"
-  [ -x "$ECLIPSE_HOME/eclipse" ] || die "[download-failed] tarball did not unpack to eclipse/eclipse"
+  if is_msys; then
+    unzip -q "$EPP_CACHE_DIR/$EPP_NAME" -d "$REVSTYLE_CI_SCRATCH"
+  else
+    tar -xzf "$EPP_CACHE_DIR/$EPP_NAME" -C "$REVSTYLE_CI_SCRATCH"
+  fi
+  [ -f "$ECLIPSE_LAUNCHER" ] || die "[download-failed] EPP archive did not unpack to $ECLIPSE_LAUNCHER"
 }
 
 install_devstyle() {
   log "installing DevStyle via p2 director (headless)..."
-  timeout 900 "$ECLIPSE_HOME/eclipse" -nosplash -consolelog \
+  timeout 900 "$ECLIPSE_LAUNCHER" -nosplash -consolelog \
     -application org.eclipse.equinox.p2.director \
     -repository "${DEVSTYLE_REPO},${RELEASE_REPO}" \
     -installIU "$DEVSTYLE_IU" \
@@ -177,17 +225,22 @@ seed_theme_prefs() {
 # initial workbench render without one.
 boot_eclipse() {
   local ws=$1 label=$2 boot_pid deadline
-  local runner=(xvfb-run --auto-servernum)
-  if ! command -v xvfb-run >/dev/null 2>&1; then
+  local runner=(env)
+  if is_msys; then
+    : # windows runner sessions can create real windows — no xvfb machinery
+  elif command -v xvfb-run >/dev/null 2>&1; then
+    runner=(xvfb-run --auto-servernum)
+    export GDK_BACKEND=x11
+  else
     [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] \
       || die "xvfb-run not installed and no display available — install xvfb"
     log "xvfb-run not installed; using the real display for the $label session"
-    runner=(env)
+    export GDK_BACKEND=x11
   fi
   rm -rf "$ws"
   mkdir -p "$ws"
-  GDK_BACKEND=x11 "${runner[@]}" \
-    "$ECLIPSE_HOME/eclipse" -nosplash -consolelog -data "$ws" -clean \
+  "${runner[@]}" \
+    "$ECLIPSE_LAUNCHER" -nosplash -consolelog -data "$(native_path "$ws")" -clean \
     > "$LOGS_DIR/$label-launcher.log" 2>&1 &
   boot_pid=$!
   deadline=$((SECONDS + BOOT_TIMEOUT))
@@ -200,14 +253,14 @@ boot_eclipse() {
   done
   log "$label workbench log appeared; soaking ${SETTLE_SECONDS}s"
   sleep "$SETTLE_SECONDS"
-  pkill -x eclipse || true
+  kill_eclipse
   wait "$boot_pid" 2>/dev/null || true   # xvfb-run exits nonzero after the kill; expected
   local i
   for i in $(seq 1 20); do
-    pgrep -x eclipse >/dev/null 2>&1 || break
+    eclipse_alive || break
     sleep 1
   done
-  pgrep -x eclipse >/dev/null 2>&1 && pkill -9 -x eclipse || true
+  if eclipse_alive; then kill_eclipse force; fi
 }
 
 assert_negative_control() {
@@ -238,7 +291,14 @@ run_pipeline() {
   n=$(grep -c 'patched by revstyle' "$LOGS_DIR/status.txt" || true)
   [ "$n" -ge "${#TARGET_BSNS[@]}" ] \
     || die "[deploy-not-patched] status reports only $n of ${#TARGET_BSNS[@]} bundles as 'patched by revstyle' — see status.txt"
-  summary "pipeline + deploy OK (Eclipse $ECLIPSE_RELEASE)"
+  # repack determinism: pack twice must be byte-identical (guards the
+  # StripSignatures/PinEntryTimes repack path on every platform)
+  sha256sum build/*.jar > "$LOGS_DIR/pack1.sha256"
+  ./revstyle.sh pack >/dev/null || die "[pipeline-failed] second pack run failed"
+  sha256sum build/*.jar > "$LOGS_DIR/pack2.sha256"
+  diff "$LOGS_DIR/pack1.sha256" "$LOGS_DIR/pack2.sha256" >/dev/null \
+    || die "[pack-nondeterministic] two pack runs produced different jar bytes — see pack*.sha256 in artifacts"
+  summary "pipeline + deploy OK, repack deterministic (Eclipse $ECLIPSE_RELEASE)"
 }
 
 assert_positive_clean() {
@@ -276,7 +336,12 @@ assert_positive_clean() {
 
 # ------------------------------------------------------------ main
 # xvfb-run is checked lazily in boot_eclipse (local runs may use a real display)
-require_cmd curl tar awk grep sha512sum pgrep pkill timeout java javac jar unzip zip patch sha256sum sed
+require_cmd curl awk grep sha512sum timeout java javac jar unzip patch sha256sum sed
+if is_msys; then
+  require_cmd tasklist.exe taskkill.exe   # no pgrep/pkill on stock Git Bash
+else
+  require_cmd tar pgrep pkill
+fi
 mkdir -p "$REVSTYLE_CI_SCRATCH" "$LOGS_DIR"
 log "scratch: $REVSTYLE_CI_SCRATCH (Eclipse $ECLIPSE_RELEASE, negative control: $EXPECT_TAB_NPE)"
 
@@ -285,6 +350,13 @@ fetch_epp
 extract_eclipse
 install_devstyle
 seed_theme_prefs
+
+if [ "$E2E_BOOT" != 1 ]; then
+  log "E2E_BOOT=0: skipping negative control and boot stages"
+  run_pipeline
+  summary "e2e PASS — pipeline only, boots skipped (Eclipse $ECLIPSE_RELEASE)"
+  exit 0
+fi
 
 if [ "$EXPECT_TAB_NPE" = 1 ]; then
   boot_eclipse "$WS_PRISTINE" pristine
