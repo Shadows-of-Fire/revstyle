@@ -38,17 +38,22 @@ concurrency:
 
 jobs:
   e2e:
-    name: e2e (${{ matrix.release }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    name: e2e (${{ matrix.os }}, ${{ matrix.release }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45      # windows runners are slower (Defender, GUI boot)
     strategy:
       fail-fast: false
       matrix:
         include:
-          - release: "2026-06"   # 4.40 — the tab-renderer NPE reproduces headlessly
+          - os: ubuntu-latest
+            release: "2026-06"   # 4.40 — the tab-renderer NPE reproduces headlessly
             expect_tab_npe: "1"
-          - release: "2026-03"   # 4.39 — known bug is silent geometry; pipeline + clean boot only
+          - os: ubuntu-latest
+            release: "2026-03"   # 4.39 — known bug is silent geometry; pipeline + clean boot only
             expect_tab_npe: "0"
+          - os: windows-latest   # Git Bash leg — `shell: bash` IS Git Bash here,
+            release: "2026-06"   # the exact environment issue #3 came from
+            expect_tab_npe: "1"
     env:
       ECLIPSE_RELEASE: ${{ matrix.release }}
       EXPECT_TAB_NPE: ${{ matrix.expect_tab_npe }}
@@ -65,13 +70,14 @@ jobs:
           java-version: '21'
 
       - name: Install xvfb
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
-      - name: Cache Eclipse EPP tarball (eclipse.org bits only)
+      - name: Cache Eclipse EPP archive (eclipse.org bits only)
         uses: actions/cache@v4
         with:
           path: ${{ env.EPP_CACHE_DIR }}
-          key: epp-java-${{ matrix.release }}-R-linux-gtk-x86_64-v1
+          key: epp-java-${{ matrix.release }}-${{ matrix.os }}-v1
 
       - name: Cache VineFlower
         uses: actions/cache@v4
@@ -81,14 +87,17 @@ jobs:
 
       - name: Run end-to-end test
         # bash explicitly: immune to the exec bit getting lost on the
-        # maintainer's drvfs checkout (mode changes don't survive there)
+        # maintainer's drvfs checkout (mode changes don't survive there).
+        # shell: bash on windows-latest IS Git Bash — the environment the
+        # windows leg exists to validate.
+        shell: bash
         run: bash ci/e2e.sh
 
       - name: Upload logs (logs only — never jars/plugins)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-logs-${{ matrix.release }}
+          name: e2e-logs-${{ matrix.os }}-${{ matrix.release }}
           path: ${{ runner.temp }}/revstyle-e2e/logs
           if-no-files-found: ignore
           retention-days: 14
