@@ -136,16 +136,39 @@ bundle_version() {
   bundle_info_line "$1" | cut -d, -f2
 }
 
+# resolve_bundle_location <rel> — bundles.info column 3 to an absolute path in
+# this shell's native (MSYS-under-Git-Bash, else POSIX) form. Three shapes seen
+# in the wild:
+#   - a relative path under ECLIPSE_HOME (classic layout: "plugins/foo.jar")
+#   - an already-absolute POSIX path ("/opt/eclipse/plugins/foo.jar")
+#   - a file: URI pointing outside ECLIPSE_HOME entirely (Windows p2 installs
+#     that share a bundle pool, e.g. "file:/C:/Users/x/.p2/pool/plugins/foo.jar")
+#     — the windows-p2-pool-support fix. Only the Windows-drive-letter shape
+#     needs surgery (strip the URI's extra leading slash, then cygpath -u on
+#     MSYS); a plain POSIX file: URI is already a valid absolute path once the
+#     scheme is stripped.
+resolve_bundle_location() {
+  local rel=$1
+  case "$rel" in
+    file:*)
+      rel="${rel#file:}"
+      if [[ "$rel" =~ ^/([A-Za-z]):(.*)$ ]]; then
+        rel="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+        is_msys && rel="$(cygpath -u -- "$rel")"
+      fi
+      printf '%s\n' "$rel"
+      ;;
+    /*) printf '%s\n' "$rel" ;;
+    *)  printf '%s/%s\n' "$ECLIPSE_HOME" "$rel" ;;
+  esac
+}
+
 # bundle_jar <bsn> — absolute path of the ACTIVE jar for a bundle. bundles.info
 # is the source of truth: installs updated in place keep stale older jars on disk.
 bundle_jar() {
   local rel
   rel=$(bundle_info_line "$1" | cut -d, -f3) || return 1
-  case "$rel" in
-    /*)        printf '%s\n' "$rel" ;;
-    file:*)    die "unsupported bundle location '$rel' in bundles.info" ;;
-    *)         printf '%s/%s\n' "$ECLIPSE_HOME" "$rel" ;;
-  esac
+  resolve_bundle_location "$rel"
 }
 
 # bundle_on_disk <bsn> — a matching jar exists under the install's or the
@@ -269,19 +292,24 @@ extract_bundle_project() {
 
 # ---------------------------------------------------------------- build & pack
 # classpath_for <pristine-jar> — pristine target jar first (unpatched classes
-# resolve from it), then every active bundle jar from bundles.info
+# resolve from it), then every active bundle jar from bundles.info. Each entry
+# goes through resolve_bundle_location (relative-to-ECLIPSE_HOME, absolute, or
+# file:-URI-outside-the-install all handled there) and then native_path, since
+# this string is consumed by javac — a native tool under Git Bash.
 classpath_for() {
-  # entries in native form with the platform separator — this string is consumed
-  # by javac (a native tool under Git Bash); bundles.info paths are relative, so
-  # only the two absolute prefixes need converting
-  local first ecl
+  local first
   first=$(native_path "$1")
-  ecl=$(native_path "$ECLIPSE_HOME")
   {
     printf '%s' "$first"
-    awk -F, -v ecl="$ecl" -v sep="$CP_SEP" '!/^#/ && $3 ~ /\.jar$/ {printf "%s%s/%s", sep, ecl, $3}' "$BUNDLES_INFO"
+    while IFS=, read -r bsn _ver rel _rest; do
+      case "$bsn" in ''|'#'*) continue ;; esac
+      case "$rel" in *.jar) ;; *) continue ;; esac
+      printf '%s%s' "$CP_SEP" "$(native_path "$(resolve_bundle_location "$rel")")"
+    done < "$BUNDLES_INFO"
   }
 }
+
+
 
 # compile_unit <bsn> <src-subdir> <expected-count> <sources...>
 compile_unit() {
