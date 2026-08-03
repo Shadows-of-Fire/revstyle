@@ -143,8 +143,10 @@ bundle_jar() {
   rel=$(bundle_info_line "$1" | cut -d, -f3) || return 1
   case "$rel" in
     /*)        printf '%s\n' "$rel" ;;
-    file:*)    die "unsupported bundle location '$rel' in bundles.info" ;;
-    *)         printf '%s/%s\n' "$ECLIPSE_HOME" "$rel" ;;
+    file:*)    rel=${rel#file:}
+               case "$rel" in /[A-Za-z]:/*) rel=${rel#/} ;; esac
+               if is_msys; then rel=$(cygpath -u -- "$rel"); fi
+               printf '%s\n' "$rel" ;;
   esac
 }
 
@@ -279,7 +281,18 @@ classpath_for() {
   ecl=$(native_path "$ECLIPSE_HOME")
   {
     printf '%s' "$first"
-    awk -F, -v ecl="$ecl" -v sep="$CP_SEP" '!/^#/ && $3 ~ /\.jar$/ {printf "%s%s/%s", sep, ecl, $3}' "$BUNDLES_INFO"
+   awk -F, -v ecl="$ecl" -v sep="$CP_SEP" '!/^#/ && $3 ~ /\.jar$/ {
+      p=$3
+      if (p ~ /^file:/) {
+        sub(/^file:/, "", p)
+        if (p ~ /^\/[A-Za-z]:\//) p = substr(p, 2)
+        printf "%s%s", sep, p
+      } else if (p ~ /^\//) {
+        printf "%s%s", sep, p
+      } else {
+        printf "%s%s/%s", sep, ecl, p
+      }
+    }' "$BUNDLES_INFO"
   }
 }
 
