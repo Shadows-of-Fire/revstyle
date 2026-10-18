@@ -18,6 +18,10 @@ fragments of context (a few lines surrounding each change) required by
 - `com.genuitec.eclipse.theming.css` — a few lines of the bundle's own
   `plugin.xml` (extension-registry metadata) and of its
   `css/include/globalstyle.css` stylesheet.
+- `com.genuitec.eclipse.theming.core` — a few lines of the bundle's own
+  `plugin.xml` (two `class-weaver` extension declarations). The two Java
+  sources the patch adds next to them are original revstyle code; they
+  subclass the vendor's weaver classes by name and quote nothing else.
 
 If you are the rights holder and want any fragment removed or replaced by a
 programmatic edit, please open an issue.

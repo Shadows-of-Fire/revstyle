@@ -1,0 +1,141 @@
+Fix Eclipse 2026-09 (4.41) on Windows aborting the workbench restore of any
+workspace that shows a tree with items, with
+"NoSuchMethodError: 'boolean org.eclipse.swt.internal.win32.OS.IsAppThemed()'"
+raised from org.eclipse.swt.widgets.Tree.CDDS_ITEMPOSTPAINT (logged as
+"Application error", Eclipse exits; in an empty workspace the same error
+floods the log as "Unhandled event loop exception" instead, once per item
+paint, the first time a wizard or view shows a tree).
+
+Two win32-only weavers in theming.core, FixTree202409 and FixTable202409
+(active for SWT 3.127 and later), do not patch SWT's Tree/Table -- they
+delete Tree.CDDS_ITEMPOSTPAINT and Table.sendEraseItemEvent and re-emit
+complete copies of those methods, instruction by instruction, as compiled
+against the 2024-09 SWT. Both copies call OS.IsAppThemed(). SWT 3.135
+(Eclipse 2026-09) removed that native: visual styles are always on, and
+its own Tree now evaluates the condition as plain true. The woven method
+therefore fails to link on 4.41 and every custom-draw notification throws.
+
+Add two tiny subclasses that run the vendor weaver unchanged and then walk
+the emitted method, replacing INVOKESTATIC OS.IsAppThemed()Z with ICONST_1
+(what 3.135 itself assumes), and point the two class-weaver extensions at
+them. The rewrite happens only when the running SWT lacks the method, so
+3.127-3.134 are woven byte for byte as before. The vendor classes stay in
+the jar untouched (FixTree202409's weave method is too large for VineFlower
+to decompile on ordinary heaps -- it is not touched here).
+
+Target: com.genuitec.eclipse.theming.core 2025.2.0.202509301431 (two new
+sources compiled against the install, plus the plugin.xml rewire as a
+resource). Details: docs/win32-tree-weaver.md
+--- /dev/null
++++ b/com.genuitec.eclipse.theming.core/src/com/genuitec/eclipse/theming/core/internal/extensions/FixTree202609.java
+@@ -0,0 +1,71 @@
++package com.genuitec.eclipse.theming.core.internal.extensions;
++
++import org.objectweb.asm.Opcodes;
++import org.objectweb.asm.tree.AbstractInsnNode;
++import org.objectweb.asm.tree.ClassNode;
++import org.objectweb.asm.tree.InsnNode;
++import org.objectweb.asm.tree.MethodInsnNode;
++import org.objectweb.asm.tree.MethodNode;
++
++/**
++ * revstyle shim for Eclipse 2026-09 (SWT 3.135) and later.
++ *
++ * FixTree202409 replaces SWT's win32 Tree.CDDS_ITEMPOSTPAINT with a copy of
++ * the 2024-09 method, emitted instruction by instruction, and that copy calls
++ * OS.IsAppThemed() exactly as SWT 3.127-3.134 did. SWT 3.135 removed the
++ * native (visual styles are always on; its own Tree now reads the condition as
++ * true), so the woven Tree threw NoSuchMethodError on every item paint, which
++ * aborts the workbench restore of any workspace that shows a tree with items.
++ * Run the original weaver, then replace the dead call with ICONST_1 -- but only
++ * when the running SWT really lacks the method, so older releases are woven
++ * byte for byte as before.
++ */
++public class FixTree202609 extends FixTree202409 {
++   private static final String OS_CLASS = "org.eclipse.swt.internal.win32.OS";
++   private static final String OS_INTERNAL = "org/eclipse/swt/internal/win32/OS";
++   private static final String IS_APP_THEMED = "IsAppThemed";
++
++   @Override
++   protected void weave(ClassNode cw) {
++      super.weave(cw);
++      dropIsAppThemed(cw, "CDDS_ITEMPOSTPAINT");
++   }
++
++   /** Replace every INVOKESTATIC OS.IsAppThemed()Z in the named method(s) with ICONST_1. */
++   static void dropIsAppThemed(ClassNode cw, String methodName) {
++      if (hasIsAppThemed()) {
++         return;
++      }
++      for (Object o : cw.methods) {
++         MethodNode mn = (MethodNode)o;
++         if (!mn.name.equals(methodName) || mn.instructions == null) {
++            continue;
++         }
++         AbstractInsnNode insn = mn.instructions.getFirst();
++         while (insn != null) {
++            AbstractInsnNode next = insn.getNext();
++            if (insn.getOpcode() == Opcodes.INVOKESTATIC) {
++               MethodInsnNode call = (MethodInsnNode)insn;
++               if (OS_INTERNAL.equals(call.owner) && IS_APP_THEMED.equals(call.name) && "()Z".equals(call.desc)) {
++                  mn.instructions.set(insn, new InsnNode(Opcodes.ICONST_1));
++               }
++            }
++            insn = next;
++         }
++      }
++   }
++
++   /** True when the running SWT still declares OS.IsAppThemed() (3.134 and older). */
++   private static boolean hasIsAppThemed() {
++      try {
++         Class<?> os = Class.forName(OS_CLASS, false, FixTree202609.class.getClassLoader());
++         os.getDeclaredMethod(IS_APP_THEMED);
++         return true;
++      } catch (NoSuchMethodException e) {
++         return false;
++      } catch (Throwable t) {
++         // not win32, or SWT not resolvable from here: leave the woven code alone
++         return true;
++      }
++   }
++}
+--- /dev/null
++++ b/com.genuitec.eclipse.theming.core/src/com/genuitec/eclipse/theming/core/internal/extensions/FixTable202609.java
+@@ -0,0 +1,16 @@
++package com.genuitec.eclipse.theming.core.internal.extensions;
++
++import org.objectweb.asm.tree.ClassNode;
++
++/**
++ * revstyle shim for Eclipse 2026-09 (SWT 3.135) and later: FixTable202409's
++ * emitted copy of Table.sendEraseItemEvent calls the OS.IsAppThemed() native
++ * that SWT 3.135 removed. Same treatment as FixTree202609.
++ */
++public class FixTable202609 extends FixTable202409 {
++   @Override
++   protected void weave(ClassNode cw) {
++      super.weave(cw);
++      FixTree202609.dropIsAppThemed(cw, "sendEraseItemEvent");
++   }
++}
+--- a/com.genuitec.eclipse.theming.core/plugin.xml
++++ b/com.genuitec.eclipse.theming.core/plugin.xml
+@@ -741,7 +741,7 @@
+              id="fix.table.202409"
+              name="Fix Table on 202409"
+              os="win32"
+-             weaver="com.genuitec.eclipse.theming.core.internal.extensions.FixTable202409">
++             weaver="com.genuitec.eclipse.theming.core.internal.extensions.FixTable202609">
+           <woven-class
+                 name="org.eclipse.swt.widgets.Table">
+           </woven-class>
+@@ -767,7 +767,7 @@
+              id="fix.tree.202409"
+              name="Fix Tree on 202409"
+              os="win32"
+-             weaver="com.genuitec.eclipse.theming.core.internal.extensions.FixTree202409">
++             weaver="com.genuitec.eclipse.theming.core.internal.extensions.FixTree202609">
+           <woven-class
+                 name="org.eclipse.swt.widgets.Tree">
+           </woven-class>

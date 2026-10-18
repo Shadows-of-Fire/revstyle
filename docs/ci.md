@@ -16,7 +16,12 @@ journey on an ephemeral runner:
    harness can't see the bug, a green run would be meaningless — so this
    failure is loud and distinct.
 4. Run `./revstyle.sh all` + `deploy`, assert `status` reports every target
-   bundle as "patched by revstyle".
+   bundle as "patched by revstyle", then **sweep** the patched bundles'
+   constant pools and weaver emissions against the install
+   (`lib/refsweep.py --single --baseline ci/refsweep-baseline.txt --fail`):
+   every platform member DevStyle links against or weaves in must exist.
+   This is the check a boot cannot make — it covers code paths a headless
+   session never reaches (win32 tree custom-draw, wizards, dialogs).
 5. **Positive test**: boot the patched install against another fresh
    workspace and assert the log carries no failure signatures (reflection
    NPEs, `NoSuchField`/`NoSuchMethod`, `LinkageError`,
@@ -24,6 +29,16 @@ journey on an ephemeral runner:
    `Application error`, severity-4 Genuitec entries), with an allowlist for
    noise that is benign on a browserless runner (Oomph's missing-WebKitGTK
    errors and friends).
+
+Both boots use a workspace that already holds a project. Right after the
+stock EPP is unpacked, `ci/e2e.sh` compiles the 40-line headless
+`IApplication` in `ci/seed/` against the install's own bundles, drops it into
+`dropins/`, and runs it once per workspace (`-application
+revstyle.ci.seed.seed`, Welcome page disabled). An empty workspace never
+paints a tree item, and the 4.41 win32 crash lives exactly there
+([win32-tree-weaver.md](win32-tree-weaver.md)): with an empty workspace the
+Windows leg would have stayed green through a bug that kills every real
+user's workspace at startup.
 
 Before any download, `ci/e2e.sh` runs the offline unit test
 `ci/test-bundle-locations.sh`: the three `bundles.info` location shapes
@@ -56,6 +71,7 @@ after quiet stretches (GitHub emails a warning first).
 | ubuntu-latest | 2026-09 (4.41) | `css-ncdfe` | pristine DevStyle aborts startup with the CSS-weaver `NoClassDefFoundError` ([css-weaver-superclass.md](css-weaver-superclass.md)) — loud, headless, before any window |
 | ubuntu-latest | 2026-06 (4.40) | `tab-npe` | the tab-renderer NPE reproduces headlessly in a fresh workspace |
 | ubuntu-latest | 2026-03 (4.39) | `none` | its known bug is silent geometry ([scrollbar autoscaling](scrollbar-autoscaling.md)) — invisible in logs, so only pipeline + clean boot are assertable |
+| windows-latest | 2026-09 (4.41) | `css-ncdfe` | win32 SWT 3.135: DevStyle's `os="win32"` Tree/Table weavers only run here, and only when a tree item is painted — hence the seeded workspace ([win32-tree-weaver.md](win32-tree-weaver.md)) |
 | windows-latest | 2026-06 (4.40) | `tab-npe` | the Git Bash leg (`shell: bash` on windows runners IS Git Bash — the exact environment of issue #3); win32 EPP zip, `eclipsec.exe` launcher, real desktop session instead of xvfb. Also proves the repacked jars load on win32 SWT ([windows-git-bash.md](windows-git-bash.md)) |
 
 Every leg additionally asserts **repack determinism** (two `pack` runs must
@@ -83,6 +99,8 @@ Every failure exits with a bracketed stage tag in the job summary:
 | `[boot-crashed]` / `[boot-timeout]` | Eclipse died or hung before writing a workspace log | Read the `*-launcher.log` artifact; likely runner/environment trouble. On windows-latest also suspect Defender slowness (first-boot jar scans) — re-run before digging; recurrent → set `E2E_BOOT=0` |
 | `[pack-nondeterministic]` | Two `pack` runs differed | A wall-clock leak in the repack path (see `lib/PinEntryTimes.java`); compare the `pack*.sha256` artifacts |
 | `[negative-control-failed]` | Pristine DevStyle no longer exhibits the known bug | **Fix the harness first** — green positives are untrustworthy until it detects the bug again |
+| `[seed-failed]` | the headless workspace seeder (`ci/seed/`) did not compile, run, or leave a project | Read `seed-ws-*.log`; a changed `org.eclipse.core.resources`/`equinox.app` API or a dropins reconciler change. Harness trouble, not a revstyle regression |
+| `[sweep-failed]` | `lib/refsweep.py` found a platform member the **patched** DevStyle bundles still reference but this Eclipse lacks | A new breakage the boot did not reach (rendering paths, dialogs). `refsweep.txt` in the artifacts names the member, the DevStyle class and the weaver gate; start at the CLAUDE.md playbook. Add to `ci/refsweep-baseline.txt` only after proving the member was unresolved on the last good release as well |
 | `[unit-failed]` | `ci/test-bundle-locations.sh` failed (bundles.info location shapes) | A revstyle regression in `resolve_bundle_location`/`classpath_for`; the check lines above the tag name the shape. Reproduce with `bash ci/test-bundle-locations.sh` |
 | `[pipeline-failed]` | `revstyle.sh all`/`deploy` failed | A real revstyle regression; reproduce locally |
 | `[deploy-not-patched]` | `status` doesn't report the bundles as patched | Marker/deploy logic regression; see `status.txt` artifact |

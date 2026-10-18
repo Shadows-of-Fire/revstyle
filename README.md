@@ -19,6 +19,7 @@ back into the plugin jars.
 | 2026-09 (4.41) | Inline search (Find/Replace bar), the DevStyle preference page and other dialogs die with `NoClassDefFoundError: org/eclipse/core/runtime/PluginVersionIdentifier` | Equinox 4.41 deleted `PluginVersionIdentifier`; DevStyle's `PlatformUtil` initializes a static field with it, so the whole class fails to load for every caller | [docs/platformutil-class-init.md](docs/platformutil-class-init.md) |
 | 2026-09 (4.41) | Theme only half applied: thin light borders, trees with the system background; the log repeats `MalformedURLException: ... "spec" is null` from `ThemeEngine.setTheme` | 4.41 rewrote the e4 CSS core; DevStyle's weaver that used to null-guard relative `@import` resolution no longer finds anything to weave, so the base stylesheets fail to load | [docs/css-import-locator.md](docs/css-import-locator.md) |
 | 2026-09 (4.41) | Once imports resolve: startup aborts with `CssParseException: Expected IDENT but found WS` from `ThemeEngine.restore` | 4.41's new CSS parser is strict; DevStyle's `devstyle:` generator drops marker lines and one block in `globalstyle.css` loses its opening line for dark themes, leaving a stray declaration the old parser silently skipped | [docs/css-parser-strictness.md](docs/css-parser-strictness.md) |
+| 2026-09 (4.41), **Windows** | Any workspace that holds a project: the window closes right after it appears, `eclipse.exe` lingers in Task Manager, the log says `Application error` with `NoSuchMethodError: OS.IsAppThemed()` from `Tree.CDDS_ITEMPOSTPAINT`. An empty workspace starts, but the first wizard with a tree floods the log with the same error | SWT 3.135 removed the `OS.IsAppThemed()` native; DevStyle's win32 Tree/Table weavers re-emit whole 2024-era copies of two SWT methods that call it, and the woven method fails to link on the first tree item paint | [docs/win32-tree-weaver.md](docs/win32-tree-weaver.md) |
 | 2026-06 (4.40) | IDE effectively unusable: rendering breaks with repeated `NullPointerException … "this.lastTabHeight" is null` in the log | SWT 3.134 removed curved-tab support from `CTabFolderRenderer`; DevStyle's tab renderers reflect into the removed fields | [docs/tab-renderer-npe.md](docs/tab-renderer-npe.md) |
 | 2026-03+ (4.39/4.40), display scale ≠ 100% | Popup dialogs with themed scrollbars (e.g. *Debug Configurations*) cut off at the bottom; can't scroll to the last items | SWT 3.133's new `AutoscalingMode` field initializer is skipped by the `Unsafe.allocateInstance` trick DevStyle uses to create scrollbar adapters | [docs/scrollbar-autoscaling.md](docs/scrollbar-autoscaling.md) |
 
@@ -83,6 +84,7 @@ plugins/com.genuitec…jar ──backup──▶ backups/   (pristine copy)
         ├─ theming.ui, startup,
         │  core.common.platform: VineFlower 1.12.0 ──▶ work/<bundle>/src/
         ├─ theming.scrollbar:    embedded src/**   ──▶ work/<bundle>/src/
+        ├─ theming.core:         two NEW sources + plugin.xml ──▶ work/<bundle>/
         └─ theming.css:          plugin.xml (resource, no compile) ──▶ work/<bundle>/
                                                         │
                               patches/*.patch ──apply──▶│
@@ -115,11 +117,23 @@ Notes on the mechanics:
 
 **Is this safe?** `setup` refuses to run without securing a pristine backup of
 each jar first, `restore` puts them back, and every step is inspectable
-(`work/` sources, `build/` outputs). Nothing outside the five plugin jars and
+(`work/` sources, `build/` outputs). Nothing outside the six plugin jars and
 the one `eclipse.ini` line is touched.
 
-**Eclipse still looks broken after deploy.** Launch once with `-clean` —
-Equinox caches bundle bytes.
+**Eclipse still looks broken after deploy.** Launch once with `-clean` so
+Equinox drops its cached bundle metadata. (It does not cache class bytes, and
+DevStyle's weaving engine keeps no on-disk cache either: a start without
+`-clean` after `deploy` still runs the patched code. If something is still
+wrong, it is a bug, not a stale cache — read the workspace log.)
+
+**My workspace "broke": it opened once, now Eclipse closes right after the
+window appears and the process stays alive (Windows, 2026-09).** The
+workspace is fine; it merely contains a project now, and painting the first
+tree item hits a DevStyle weaver that 4.41 broke
+([docs/win32-tree-weaver.md](docs/win32-tree-weaver.md)). Kill the stuck
+`eclipse.exe` (it holds the workspace lock), run `./revstyle.sh all` and
+`deploy` with a revstyle that includes the `theming.core` target, launch with
+`-clean`. Do not delete `.metadata`.
 
 **Antivirus flags the repacked jar.** Some AV heuristics dislike freshly
 unsigned jars; the bytes are exactly your original jar plus the recompiled

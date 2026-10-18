@@ -37,6 +37,7 @@ PATCH_TARGETS=(
   "com.genuitec.eclipse.startup|com/genuitec/eclipse/startup/patches|1|IgnoreCSSClassPatch.java|"
   "com.genuitec.eclipse.core.common.platform|com/genuitec/eclipse/core/util|1|PlatformUtil.java|"
   "com.genuitec.eclipse.theming.css||||plugin.xml css/include/globalstyle.css"
+  "com.genuitec.eclipse.theming.core|com/genuitec/eclipse/theming/core/internal/extensions|2|FixTree202609.java FixTable202609.java|plugin.xml"
 )
 TARGET_BSNS=()
 for _t in "${PATCH_TARGETS[@]}"; do TARGET_BSNS+=("${_t%%|*}"); done

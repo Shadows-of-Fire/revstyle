@@ -57,6 +57,9 @@ jobs:
           - os: windows-latest   # Git Bash leg — `shell: bash` IS Git Bash here,
             release: "2026-06"   # the exact environment issue #3 came from
             negative_control: "tab-npe"
+          - os: windows-latest   # 4.41 on win32 SWT: the Tree/Table weavers only run here
+            release: "2026-09"   # (docs/win32-tree-weaver.md); seeded workspace paints the tree
+            negative_control: "css-ncdfe"
     env:
       ECLIPSE_RELEASE: ${{ matrix.release }}
       NEGATIVE_CONTROL: ${{ matrix.negative_control }}

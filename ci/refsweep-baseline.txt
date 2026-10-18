@@ -1,0 +1,11 @@
+# lib/refsweep.py --single baseline: platform members that DevStyle 2025.2.0
+# references but that are unresolved on EVERY Eclipse release, because the
+# referencing code is guarded at runtime in a way a static pass cannot see
+# (reflection probes, version branches inside a weaver). Recorded on Eclipse
+# 2026-06 (4.40), the last release where DevStyle worked everywhere, from a
+# Windows install's bundle set (win32) and a Linux install's (gtk):
+#   python3 -I lib/refsweep.py <root> <4.40 plugins> <4.40 plugins> --single --write-baseline out.txt
+# CI (ci/e2e.sh, [sweep-failed]) reports these but does not count them. Add a
+# line only after proving the member is unresolved on the last GOOD release
+# too — never to silence a finding on the release that just broke.
+org/eclipse/swt/internal/gtk/OS.GTK_VERSION I

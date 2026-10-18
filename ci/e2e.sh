@@ -5,8 +5,12 @@
 # Builds a throwaway Eclipse in a scratch dir, installs pristine DevStyle from
 # the vendor's PUBLIC p2 site, proves the harness can detect the release's
 # known DevStyle failure (negative control: the 4.40 tab-renderer NPE or the
-# 4.41 startup NoClassDefFoundError), runs the revstyle pipeline + deploy, and
-# boots headless under xvfb to verify the patched install logs clean.
+# 4.41 startup NoClassDefFoundError), runs the revstyle pipeline + deploy,
+# sweeps the patched bundles' constant pools against the install
+# (lib/refsweep.py), and boots headless under xvfb to verify the patched
+# install logs clean. Both boots use a workspace that already holds a project
+# (ci/seed/): an empty workspace never paints a tree item, and the 4.41 win32
+# crash lives in Tree item custom-draw (docs/win32-tree-weaver.md).
 #
 # Legal/invariant note (do not weaken): DevStyle is fetched from Genuitec's
 # own public update site onto an ephemeral machine and discarded with it.
@@ -249,8 +253,7 @@ boot_eclipse() {
     log "xvfb-run not installed; using the real display for the $label session"
     export GDK_BACKEND=x11
   fi
-  rm -rf "$ws"
-  mkdir -p "$ws"
+  mkdir -p "$ws"   # seeded by seed_workspace — never wiped here
   "${runner[@]}" \
     "$ECLIPSE_LAUNCHER" -nosplash -consolelog -data "$(native_path "$ws")" -clean \
     > "$LOGS_DIR/$label-launcher.log" 2>&1 &
@@ -357,6 +360,80 @@ assert_positive_clean() {
   summary "positive test OK: patched workspace log clean (Eclipse $ECLIPSE_RELEASE)"
 }
 
+# A 40-line headless IApplication (ci/seed/) that creates one plain project.
+# Built against the scratch install's own bundles with the same classpath the
+# pipeline uses, dropped into dropins/ (p2 reconciles it on the next start).
+# Runs on the STOCK Eclipse, before DevStyle is installed.
+build_seed_dropin() {
+  local out="$REVSTYLE_CI_SCRATCH/seed" cp argfile
+  rm -rf "$out"
+  mkdir -p "$out/classes" "$ECLIPSE_HOME/dropins"
+  cp=$(classpath_for "$(ls "$ECLIPSE_HOME"/plugins/org.eclipse.osgi_*.jar | head -1)")
+  argfile="$out/javac.args"
+  {
+    printf -- '--release 17 -nowarn -encoding UTF-8\n'
+    printf -- '-classpath "%s"\n' "$cp"
+    printf -- '-d "%s"\n' "$(native_path "$out/classes")"
+    printf -- '"%s"\n' "$(native_path "$REPO_DIR/ci/seed/SeedWorkspace.java")"
+  } > "$argfile"
+  javac "@$(native_path "$argfile")" || die "[seed-failed] could not compile ci/seed/SeedWorkspace.java against the scratch install"
+  jar --create --file "$(native_path "$out/revstyle.ci.seed_1.0.0.jar")" \
+      --manifest "$(native_path "$REPO_DIR/ci/seed/MANIFEST.MF")" \
+      -C "$(native_path "$out/classes")" . -C "$(native_path "$REPO_DIR/ci/seed")" plugin.xml \
+    || die "[seed-failed] could not build the seed dropin"
+  cp "$out/revstyle.ci.seed_1.0.0.jar" "$ECLIPSE_HOME/dropins/"
+  log "seed dropin built and installed into dropins/"
+}
+
+# seed_workspace <ws> — fresh workspace holding one project, Welcome page off
+# (a maximized Welcome would hide the Package Explorer, and with it the tree
+# the win32 custom-draw path paints)
+seed_workspace() {
+  local ws=$1 label
+  label=$(basename "$ws")
+  rm -rf "$ws"
+  mkdir -p "$ws/.metadata/.plugins/org.eclipse.core.runtime/.settings"
+  printf 'eclipse.preferences.version=1\nshowIntro=false\n' \
+    > "$ws/.metadata/.plugins/org.eclipse.core.runtime/.settings/org.eclipse.ui.prefs"
+  timeout 600 "$ECLIPSE_LAUNCHER" -nosplash -consolelog \
+    -application revstyle.ci.seed.seed -data "$(native_path "$ws")" \
+    > "$LOGS_DIR/seed-$label.log" 2>&1 \
+    || die "[seed-failed] the headless workspace seeder failed for $label — see seed-$label.log"
+  [ -f "$ws/revstyle-seed/.project" ] \
+    || die "[seed-failed] seeder exited 0 but $label holds no revstyle-seed project — see seed-$label.log"
+  # the boots key on .metadata/.log appearing; the seeder must not pre-create it
+  rm -f "$ws/.metadata/.log" "$ws"/.metadata/.bak_*.log
+  log "seeded $label with project revstyle-seed"
+}
+
+# Static guard, after deploy: every platform member the (patched) DevStyle
+# bundles link against or weave in must exist in this install. This is what a
+# boot cannot promise — code paths a headless session never reaches (win32
+# Tree item custom-draw, wizards, dialogs). Reads the user's own bundles from
+# the scratch install; the extracted copies stay on the runner.
+assert_sweep_clean() {
+  local py root j b
+  py=$(command -v python3 || command -v python || true)
+  if [ -z "$py" ]; then log "refsweep skipped: no python on this runner"; return 0; fi
+  root="$REVSTYLE_CI_SCRATCH/sweep-root"
+  rm -rf "$root"; mkdir -p "$root"
+  for j in "$ECLIPSE_HOME"/plugins/com.genuitec.*; do
+    b=$(basename "$j" .jar)
+    if [ -d "$j" ]; then cp -r "$j" "$root/$b"; else mkdir -p "$root/$b" && unzip -qo "$j" -d "$root/$b"; fi
+  done
+  if "$py" -I "$REPO_DIR/lib/refsweep.py" "$(native_path "$root")" "$(native_path "$ECLIPSE_HOME/plugins")" \
+        "$(native_path "$ECLIPSE_HOME/plugins")" --single --baseline "$(native_path "$REPO_DIR/ci/refsweep-baseline.txt")" \
+        --fail > "$LOGS_DIR/refsweep.txt" 2>&1; then
+    summary "refsweep OK: no active platform member missing for the patched bundles (Eclipse $ECLIPSE_RELEASE)"
+  else
+    grep -B1 'weaver active\]' "$LOGS_DIR/refsweep.txt" | head -40 || true
+    die "[sweep-failed] lib/refsweep.py found platform members the patched DevStyle bundles
+  still reference but Eclipse $ECLIPSE_RELEASE no longer has — see refsweep.txt in the
+  artifacts. A boot may still look clean: these are code paths a headless session
+  never reaches. Start at the CLAUDE.md diagnosis playbook (member-level sweep)."
+  fi
+}
+
 # ------------------------------------------------------------ main
 # xvfb-run is checked lazily in boot_eclipse (local runs may use a real display)
 require_cmd curl awk grep sha512sum timeout java javac jar unzip patch sha256sum sed
@@ -377,12 +454,17 @@ log "scratch: $REVSTYLE_CI_SCRATCH (Eclipse $ECLIPSE_RELEASE, negative control: 
 probe_update_site
 fetch_epp
 extract_eclipse
+resolve_eclipse "$ECLIPSE_HOME"
+build_seed_dropin
+seed_workspace "$WS_PRISTINE"
+seed_workspace "$WS_PATCHED"
 install_devstyle
 seed_theme_prefs
 
 if [ "$E2E_BOOT" != 1 ]; then
   log "E2E_BOOT=0: skipping negative control and boot stages"
   run_pipeline
+  assert_sweep_clean
   summary "e2e PASS — pipeline only, boots skipped (Eclipse $ECLIPSE_RELEASE)"
   exit 0
 fi
@@ -397,6 +479,7 @@ else
 fi
 
 run_pipeline
+assert_sweep_clean
 boot_eclipse "$WS_PATCHED" patched
 assert_positive_clean
 

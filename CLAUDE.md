@@ -42,13 +42,25 @@ playbook for that event.
    root. `resolve_eclipse` handles all of this; `--config` overrides. Compare members with `javap -p` first, then
    VineFlower-decompile the specific classes from both jars and diff
    (pre-create package dirs; VineFlower's `--only` saver doesn't mkdir).
-   **Sweep first, then dig**: `lib/refsweep.py <extracted DevStyle classes>
-   <old plugins/> <new plugins/>` lists every platform class DevStyle's
-   constant pools reference (direct refs, descriptors, *and* string
-   constants — the ASM weavers name their targets in strings) that exists in
-   the old release and not the new one. On 4.41 it found all four broken
-   bundles in one pass (issue #7). Member-level removals (fields/methods
-   reached by reflection) still need `javap -p` diffs.
+   **Sweep first, then dig**: `python3 -I lib/refsweep.py <extracted DevStyle
+   bundles> <old plugins/> <new plugins/> [--old <prev win32 SWT jar>]` lists
+   (a) every platform class DevStyle's constant pools reference (direct refs,
+   descriptors, *and* string constants — the ASM weavers name their targets
+   in strings) that exists in the old release and not the new one, and
+   (b) every platform **member** DevStyle links against directly *or emits
+   from a weaver* (the bytecode is walked and the strings fed to
+   `visitMethodInsn`/`visitFieldInsn` recovered) that resolves in the old
+   release and not the new one. Each hit carries the weaver's gate from
+   `plugin.xml` (os, SWT version range, woven class still present), so
+   inactive weavers are labelled, not alarmed. On 4.41 pass (a) found the
+   four Linux-visible breaks and pass (b) the Windows one (issue #7, both
+   rounds). **Feed it a Windows install's bundle set**: three DevStyle
+   bundles (`theming.base.win`, `theming.scrollbar.win`,
+   `theming.elevation.win32`) and every `os="win32"` weaver never exist on
+   a Linux install, and from Linux pass the previous release's win32 SWT
+   fragment (Maven Central) as `--old` so win32 classes resolve against
+   win32. Members reached by *reflection* are the one thing it cannot see —
+   those still need `javap -p` diffs.
 3. **Known DevStyle failure modes**, ranked by past incidents:
    - Reflection into private SWT fields/methods that got removed
      (4.37 `DPIUtil.autoScaleDown`, 4.40 `CTabFolderRenderer` curve fields).
@@ -86,6 +98,28 @@ playbook for that event.
      dropping per theme/OS combo, parses with the install's real engine) over
      `work/**/css` for all seven combos before shipping a CSS resource patch
      (docs/css-parser-strictness.md).
+   - **Weavers that re-emit whole SWT methods** (`FixTree202409`,
+     `FixTable202409`, win32, SWT ≥ 3.127): not patches but complete
+     ASM-ified copies of `Tree.CDDS_ITEMPOSTPAINT`/`Table.sendEraseItemEvent`
+     from the 2024-09 SWT. Any member that copy calls and a later SWT
+     removes (4.41: `OS.IsAppThemed()`) surfaces as `NoSuchMethodError`
+     *from inside SWT's own class* on the first tree item paint — "Application
+     error" and a hung `eclipse.exe` when the workspace already shows a
+     project, an "Unhandled event loop" flood when it does not. Looks like
+     workspace corruption; isn't. Fix pattern: do NOT decompile the weaver
+     (its `weave` method needs a 24 GB heap in VineFlower; `setup` writes a
+     stub and moves on). Subclass it, call `super.weave(cw)`, post-process
+     the `MethodNode` it left in `cw.methods` (swap the dead call for the
+     constant the new SWT assumes), and re-point the `class-weaver` entry in
+     `plugin.xml` at the subclass — two new sources plus a resource in one
+     target (docs/win32-tree-weaver.md). Gate the rewrite on a reflective
+     probe of the running SWT so older releases are woven unchanged.
+   - **Crashes that depend on workspace content** are rendering-path breaks:
+     the code runs when a widget paints, so an empty workspace, a headless
+     boot or a Welcome page covering the perspective never reaches it. The
+     e2e seeds a project into both boot workspaces (`ci/seed/`) for that
+     reason; reproduce locally with a workspace that has one project and the
+     Package Explorer visible, on **Windows** for win32 weavers.
    - **Static initializers touching removed platform classes** (4.41
      `PlatformUtil` → `PluginVersionIdentifier`): the whole class fails to
      load for every caller, however unrelated the method they wanted. Fix
@@ -106,6 +140,14 @@ playbook for that event.
    drags.
 
 ## Making a new fix
+
+0. Before touching code, run the member-level sweep (step 2 above) against the
+   new install — once on the pristine bundles to enumerate the breakage, and
+   again on the patched install when you think you are done (expect
+   `0 active finding(s)`). CI runs the one-install form on every leg
+   (`--single --baseline ci/refsweep-baseline.txt --fail`, tag
+   `[sweep-failed]`); add to the baseline only members proven unresolved on
+   the last *good* release too, never to quiet the release that just broke.
 
 1. `./revstyle.sh setup` (add `--all` when the broken bundle isn't already a
    target) → sources in `work/<bundle>/src/`. Bundles that embed real sources
@@ -161,7 +203,21 @@ playbook for that event.
   per entry would cost tens of seconds on Windows, and `C:/…` is already the
   native form javac wants. Change both together and run
   `ci/test-bundle-locations.sh` (also the first stage of `ci/e2e.sh`).
-- Always `-clean` after swapping a jar, or Equinox serves cached bytes.
+- Always `-clean` after swapping a jar so Equinox drops cached bundle
+  *metadata*. It does not cache class bytes and DevStyle's weaving engine
+  (`com.genuitec.eclipse.patches`) keeps no on-disk cache: a launch without
+  `-clean` still ran the patched classes on 4.41. So a symptom that
+  survives `deploy` is a bug, not a stale cache — read the log.
+- A failed `Application error` start on Windows leaves `eclipse.exe` hung in
+  shutdown holding the workspace lock (`.metadata/.lock_info` has its PID).
+  `deploy` refuses while it lives; kill that PID (`taskkill /PID n /F`),
+  not every Eclipse, and never delete `.metadata` to "repair" the workspace.
+- The e2e boots run against workspaces seeded with one project by a
+  headless `IApplication` built from `ci/seed/` into `dropins/` on the
+  stock Eclipse before DevStyle is installed (`-application
+  revstyle.ci.seed.seed`; the id is plugin id + extension id). Keep
+  `showIntro=false` in the seeded prefs or the maximized Welcome hides the
+  Package Explorer and no tree is painted.
 - `eclipse_running` uses `pgrep -x`; a `-f` substring match catches your own
   command line. It asks Windows (`tasklist.exe`) only when `ECLIPSE_HOME` is
   under `/mnt/*` — a Windows Eclipse can't hold a Linux install's files.
@@ -218,9 +274,16 @@ holding `eclipse.ini` and `configuration/`. Useful patterns by setup:
   `ECLIPSE_HOME` accepts `C:/…`, `C:\…`, or `/c/…`. Use `eclipsec.exe` when
   the process must stay attached to the shell (`eclipse.exe` detaches);
   kill via `taskkill.exe`. See docs/windows-git-bash.md.
-- Verify on both toolkits when you can — win32 and GTK diverge in SWT
-  internals, and a fix that is silent in one can misbehave in the other.
-  The same DevStyle jars (signed, byte-identical) ship on both platforms.
+- Verify on both toolkits — win32 and GTK diverge in SWT internals, DevStyle
+  gates dozens of weavers on `os="win32"`, and three of its bundles exist
+  only on Windows installs. "4.41 works" on Linux said nothing about Windows
+  (issue #7, second round). The shared DevStyle jars (signed, byte-identical)
+  ship on both platforms; the win32-only ones do not reach a Linux install.
+- WSL2 can drive the Windows test install for a boot check: deploy with
+  `ECLIPSE_HOME=/mnt/c/...`, launch `./eclipse.exe -data 'C:\\...' -clean`
+  from the install dir, read the workspace log, kill by the PID in
+  `.lock_info`. Headless `-application` runs work the same way with
+  `eclipsec.exe`.
 - Reproducing DPI bugs requires a display scale above 100%; at 100% the
   geometry bugs don't manifest.
 - Any modern JDK works for the pipeline (`javac --release 8` is still
