@@ -3,3 +3,4 @@ work/
 build/
 backups/
 .epp-cache/
+__pycache__/

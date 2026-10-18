@@ -3,9 +3,10 @@
 # install on a stock Eclipse?
 #
 # Builds a throwaway Eclipse in a scratch dir, installs pristine DevStyle from
-# the vendor's PUBLIC p2 site, proves the harness can detect the known 4.40
-# tab-renderer bug (negative control), runs the revstyle pipeline + deploy,
-# and boots headless under xvfb to verify the patched install logs clean.
+# the vendor's PUBLIC p2 site, proves the harness can detect the release's
+# known DevStyle failure (negative control: the 4.40 tab-renderer NPE or the
+# 4.41 startup NoClassDefFoundError), runs the revstyle pipeline + deploy, and
+# boots headless under xvfb to verify the patched install logs clean.
 #
 # Legal/invariant note (do not weaken): DevStyle is fetched from Genuitec's
 # own public update site onto an ephemeral machine and discarded with it.
@@ -14,11 +15,14 @@
 #
 # Local use (run from a scratch worktree — the pipeline writes work/ build/
 # backups/ tools/ into the repo dir):
-#   ECLIPSE_RELEASE=2026-06 EXPECT_TAB_NPE=1 ci/e2e.sh
+#   ECLIPSE_RELEASE=2026-06 NEGATIVE_CONTROL=tab-npe ci/e2e.sh
 #
 # Env knobs:
 #   ECLIPSE_RELEASE      required, e.g. 2026-06
-#   EXPECT_TAB_NPE       1 = run the pristine-DevStyle negative control (4.40)
+#   NEGATIVE_CONTROL     which pristine-DevStyle failure the release must show
+#                        before the positive test is trusted: tab-npe (4.40),
+#                        css-ncdfe (4.41), none (silent-bug releases, 4.39).
+#                        EXPECT_TAB_NPE=1 is the old spelling of tab-npe.
 #   REVSTYLE_CI_SCRATCH  scratch root (default: $RUNNER_TEMP or mktemp -d)
 #   EPP_CACHE_DIR        where the Eclipse tarball is kept (CI caches this dir)
 #   DEVSTYLE_REPO        p2 repo URL (override to fault-inject a dead site)
@@ -46,7 +50,12 @@ unset ECLIPSE_HOME
 
 # ------------------------------------------------------------ configuration
 [ -n "${ECLIPSE_RELEASE:-}" ] || die "ECLIPSE_RELEASE is required (e.g. 2026-06)"
-EXPECT_TAB_NPE="${EXPECT_TAB_NPE:-0}"
+NEGATIVE_CONTROL="${NEGATIVE_CONTROL:-none}"
+if [ "${EXPECT_TAB_NPE:-0}" = 1 ]; then NEGATIVE_CONTROL=tab-npe; fi
+case "$NEGATIVE_CONTROL" in
+  tab-npe|css-ncdfe|none) ;;
+  *) die "NEGATIVE_CONTROL must be tab-npe, css-ncdfe or none (got '$NEGATIVE_CONTROL')" ;;
+esac
 E2E_BOOT="${E2E_BOOT:-1}"
 REVSTYLE_CI_SCRATCH="${REVSTYLE_CI_SCRATCH:-${RUNNER_TEMP:-$(mktemp -d)}/revstyle-e2e}"
 # windows runners hand us RUNNER_TEMP as D:\a\_temp — bash-side logic needs it
@@ -105,6 +114,9 @@ kill_eclipse() {  # kill_eclipse [force] — force is implicit on MSYS (taskkill
 
 # The exact 4.40 bug signature (docs/tab-renderer-npe.md)
 NPE_SIG='Cannot invoke "java.lang.reflect.Field.setAccessible(boolean)" because "this.lastTabHeight" is null'
+# The exact 4.41 bug signature (docs/css-weaver-superclass.md) — fires in
+# PartRenderingEngine.initializeStyling, before any window exists
+NCDFE_SIG='java.lang.NoClassDefFoundError: org/eclipse/e4/ui/css/swt/engine/AbstractCSSSWTEngineImpl'
 
 summary() {
   log "$*"
@@ -264,22 +276,29 @@ boot_eclipse() {
 }
 
 assert_negative_control() {
-  local n activated
-  n=$(grep -cF "$NPE_SIG" "$WS_PRISTINE/.metadata/.log" || true)
+  local sig label n activated
+  case "$NEGATIVE_CONTROL" in
+    tab-npe)   sig=$NPE_SIG;   label="tab-renderer NPE" ;;
+    css-ncdfe) sig=$NCDFE_SIG; label="CSS-weaver NoClassDefFoundError" ;;
+  esac
+  n=$(grep -cF "$sig" "$WS_PRISTINE/.metadata/.log" || true)
   if [ "$n" -ge 1 ]; then
-    summary "negative control OK: $n tab-renderer NPEs on pristine DevStyle (Eclipse $ECLIPSE_RELEASE)"
+    summary "negative control OK: $n x $label on pristine DevStyle (Eclipse $ECLIPSE_RELEASE)"
     return 0
   fi
-  activated=$(grep -cF 'A DevStyle Theme is being activated' "$WS_PRISTINE/.metadata/.log" || true)
-  if [ "$activated" -eq 0 ]; then
-    die "[negative-control-failed] DevStyle never activated its theme in the pristine
+  if [ "$NEGATIVE_CONTROL" = tab-npe ]; then
+    # the 4.40 bug needs the theme to be active; the 4.41 one fires before
+    # theme activation is even attempted, so this check only applies here
+    activated=$(grep -cF 'A DevStyle Theme is being activated' "$WS_PRISTINE/.metadata/.log" || true)
+    if [ "$activated" -eq 0 ]; then
+      die "[negative-control-failed] DevStyle never activated its theme in the pristine
   session (no activation INFO entry) — the harness is broken, not the plugin.
   A green positive test from this workflow is NOT trustworthy until this is fixed."
+    fi
   fi
-  die "[negative-control-failed] pristine DevStyle no longer exhibits the tab-renderer
-  NPE headlessly on Eclipse $ECLIPSE_RELEASE (theme did activate). The harness can no
-  longer detect the bug it exists to guard — a green positive test is NOT
-  trustworthy until this is fixed."
+  die "[negative-control-failed] pristine DevStyle no longer exhibits the $label
+  headlessly on Eclipse $ECLIPSE_RELEASE. The harness can no longer detect the bug it
+  exists to guard — a green positive test is NOT trustworthy until this is fixed."
 }
 
 run_pipeline() {
@@ -307,9 +326,10 @@ assert_positive_clean() {
   # under a generic "Unhandled event loop exception" header — line-level
   # grep -v filtering would misfire. A block fails when it matches a failure
   # pattern and nothing in it matches the allowlist.
-  # Failure patterns: the reflection-breakage exception families + the 4.40
-  # signature field, plus severity-4 (ERROR) genuitec !ENTRY stacks — NOT the
-  # bare word "genuitec" (INFO entries mention it legitimately).
+  # Failure patterns: the reflection-breakage exception families, the
+  # class-loading families the 4.41 weaver/static-initializer breaks surface
+  # as, the 4.40 signature field, plus severity-4 (ERROR) genuitec !ENTRY
+  # stacks — NOT the bare word "genuitec" (INFO entries mention it legitimately).
   # Allowlist (verified benign on runners without WebKitGTK):
   #   - Oomph "No more handles ... no underlying browser" + NotificationViewPart cast
   #   - jface "Cannot bind to an undefined command" warning
@@ -322,7 +342,7 @@ assert_positive_clean() {
     /^!(SESSION|ENTRY)/ { flush() }
     {
       blk = blk $0 "\n"
-      if ($0 ~ /NullPointerException|NoSuchField|NoSuchMethod|LinkageError|Unhandled event loop|lastTabHeight/) bad=1
+      if ($0 ~ /NullPointerException|NoSuchField|NoSuchMethod|LinkageError|NoClassDefFoundError|ClassNotFoundException|ExceptionInInitializerError|Application error|Unhandled event loop|lastTabHeight/) bad=1
       if ($0 ~ /^!ENTRY com\.genuitec\.[^ ]+ 4 /) bad=1
       if ($0 ~ /No more handles because there is no underlying browser available|Cannot bind to an undefined command|WEBKIT_DISABLE_COMPOSITING_MODE|NotificationViewPart|wmic Windows Defender check failed|WindowsDefenderChecker/) ok=1
     }
@@ -352,7 +372,7 @@ fi
 bash ci/test-bundle-locations.sh \
   || die "[unit-failed] bundles.info location-shape unit test failed — see the check lines above"
 mkdir -p "$REVSTYLE_CI_SCRATCH" "$LOGS_DIR"
-log "scratch: $REVSTYLE_CI_SCRATCH (Eclipse $ECLIPSE_RELEASE, negative control: $EXPECT_TAB_NPE)"
+log "scratch: $REVSTYLE_CI_SCRATCH (Eclipse $ECLIPSE_RELEASE, negative control: $NEGATIVE_CONTROL)"
 
 probe_update_site
 fetch_epp
@@ -367,7 +387,7 @@ if [ "$E2E_BOOT" != 1 ]; then
   exit 0
 fi
 
-if [ "$EXPECT_TAB_NPE" = 1 ]; then
+if [ "$NEGATIVE_CONTROL" != none ]; then
   boot_eclipse "$WS_PRISTINE" pristine
   assert_negative_control
 else

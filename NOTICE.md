@@ -8,11 +8,16 @@ user's own installed copy. The files under `patches/` contain the minimal
 fragments of context (a few lines surrounding each change) required by
 `patch(1)` to apply the fixes; these fragments originate from:
 
-- `com.genuitec.eclipse.theming.ui` — decompiled output (VineFlower 1.12.0)
-  of the user's installed bundle; quoted solely for interoperability/repair.
+- `com.genuitec.eclipse.theming.ui`, `com.genuitec.eclipse.startup`,
+  `com.genuitec.eclipse.core.common.platform` — decompiled output
+  (VineFlower 1.12.0) of the user's installed bundles; quoted solely for
+  interoperability/repair.
 - `com.genuitec.eclipse.theming.scrollbar` — sources the bundle itself embeds,
   derived from the codeaffine SWT FlatScrollBar project (EPL-1.0, see below)
   with Genuitec modifications.
+- `com.genuitec.eclipse.theming.css` — a few lines of the bundle's own
+  `plugin.xml` (extension-registry metadata) and of its
+  `css/include/globalstyle.css` stylesheet.
 
 If you are the rights holder and want any fragment removed or replaced by a
 programmatic edit, please open an issue.

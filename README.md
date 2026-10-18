@@ -1,8 +1,8 @@
 # revstyle
 
 Community repair kit for the **DevStyle / Darkest Dark** Eclipse theme plugin
-on modern Eclipse releases (2026-03 and 2026-06), where the plugin is broken
-and no longer maintained by its vendor.
+on modern Eclipse releases (2026-03, 2026-06 and 2026-09), where the plugin is
+broken and no longer maintained by its vendor.
 
 This repository contains **no DevStyle code or binaries**. Instead it ships
 automation that works on *your own* installation: it retrieves the plugin jars
@@ -15,11 +15,21 @@ back into the plugin jars.
 
 | Eclipse | Symptom | Root cause | Details |
 |---|---|---|---|
+| 2026-09 (4.41) | Eclipse does not start at all: only the generic "An error has occurred. See the log file" dialog; the log shows `NoClassDefFoundError: org/eclipse/e4/ui/css/swt/engine/AbstractCSSSWTEngineImpl` | 4.41 collapsed the e4 CSS engine hierarchy; DevStyle's startup bundle weaves an `applyStyles` override into `CSSSWTEngineImpl` whose `super` call names the removed class | [docs/css-weaver-superclass.md](docs/css-weaver-superclass.md) |
+| 2026-09 (4.41) | Inline search (Find/Replace bar), the DevStyle preference page and other dialogs die with `NoClassDefFoundError: org/eclipse/core/runtime/PluginVersionIdentifier` | Equinox 4.41 deleted `PluginVersionIdentifier`; DevStyle's `PlatformUtil` initializes a static field with it, so the whole class fails to load for every caller | [docs/platformutil-class-init.md](docs/platformutil-class-init.md) |
+| 2026-09 (4.41) | Theme only half applied: thin light borders, trees with the system background; the log repeats `MalformedURLException: ... "spec" is null` from `ThemeEngine.setTheme` | 4.41 rewrote the e4 CSS core; DevStyle's weaver that used to null-guard relative `@import` resolution no longer finds anything to weave, so the base stylesheets fail to load | [docs/css-import-locator.md](docs/css-import-locator.md) |
+| 2026-09 (4.41) | Once imports resolve: startup aborts with `CssParseException: Expected IDENT but found WS` from `ThemeEngine.restore` | 4.41's new CSS parser is strict; DevStyle's `devstyle:` generator drops marker lines and one block in `globalstyle.css` loses its opening line for dark themes, leaving a stray declaration the old parser silently skipped | [docs/css-parser-strictness.md](docs/css-parser-strictness.md) |
 | 2026-06 (4.40) | IDE effectively unusable: rendering breaks with repeated `NullPointerException … "this.lastTabHeight" is null` in the log | SWT 3.134 removed curved-tab support from `CTabFolderRenderer`; DevStyle's tab renderers reflect into the removed fields | [docs/tab-renderer-npe.md](docs/tab-renderer-npe.md) |
 | 2026-03+ (4.39/4.40), display scale ≠ 100% | Popup dialogs with themed scrollbars (e.g. *Debug Configurations*) cut off at the bottom; can't scroll to the last items | SWT 3.133's new `AutoscalingMode` field initializer is skipped by the `Unsafe.allocateInstance` trick DevStyle uses to create scrollbar adapters | [docs/scrollbar-autoscaling.md](docs/scrollbar-autoscaling.md) |
 
 Upstream reports: [Genuitec/community#21](https://github.com/Genuitec/community/discussions/21),
-[CodeTogether-Inc/CodeTogether#444](https://github.com/CodeTogether-Inc/CodeTogether/issues/444).
+[CodeTogether-Inc/CodeTogether#444](https://github.com/CodeTogether-Inc/CodeTogether/issues/444),
+and for 2026-09 [revstyle#7](https://github.com/Shadows-of-Fire/revstyle/issues/7).
+
+The 2026-09 fixes are verified headlessly (clean workspace log on a stock
+2026-09 with the patched bundles); whether every widget is coloured exactly
+as before needs eyes on a real session, so please report leftovers on
+issue #7.
 
 ## Requirements
 
@@ -70,8 +80,10 @@ your Eclipse install                     this repo
 ────────────────────                     ─────────
 plugins/com.genuitec…jar ──backup──▶ backups/   (pristine copy)
         │
-        ├─ theming.ui:        VineFlower 1.12.0 ──▶ work/<bundle>/src/
-        └─ theming.scrollbar: embedded src/**   ──▶ work/<bundle>/src/
+        ├─ theming.ui, startup,
+        │  core.common.platform: VineFlower 1.12.0 ──▶ work/<bundle>/src/
+        ├─ theming.scrollbar:    embedded src/**   ──▶ work/<bundle>/src/
+        └─ theming.css:          plugin.xml (resource, no compile) ──▶ work/<bundle>/
                                                         │
                               patches/*.patch ──apply──▶│
                                                         ▼
@@ -103,7 +115,7 @@ Notes on the mechanics:
 
 **Is this safe?** `setup` refuses to run without securing a pristine backup of
 each jar first, `restore` puts them back, and every step is inspectable
-(`work/` sources, `build/` outputs). Nothing outside the two plugin jars and
+(`work/` sources, `build/` outputs). Nothing outside the five plugin jars and
 the one `eclipse.ini` line is touched.
 
 **Eclipse still looks broken after deploy.** Launch once with `-clean` —
@@ -114,8 +126,10 @@ unsigned jars; the bytes are exactly your original jar plus the recompiled
 classes, and you built them locally.
 
 **A different DevStyle/Eclipse version?** The patches target DevStyle
-2025.2.0.202509301431 on Eclipse 2026-03/2026-06 exactly. Other combinations
-fail fast with a clear error rather than half-applying.
+2025.2.0.202509301431 on Eclipse 2026-03 through 2026-09. Other combinations
+fail fast with a clear error rather than half-applying. The last revision
+that patched only the two 2026-03/2026-06 bundles is kept on the `2026-06`
+branch for the record.
 
 **`status` says "pristine (unsigned)" but I deployed patched jars earlier.**
 Jars deployed by an older revstyle (before the `Revstyle-Patched` manifest

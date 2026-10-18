@@ -1,0 +1,45 @@
+Fix DevStyle's base stylesheet being rejected by the Eclipse 2026-09 (4.41)
+CSS parser once its imports resolve (see 0001 for the import side).
+
+DevStyle serves its CSS through the devstyle: URL handler, whose generator
+drops whole lines carrying theme/OS markers such as /*LIGHTONLY*/ or
+/*MACONLY*/ before the engine parses the result. One block in
+globalstyle.css carries the marker on its opening selector line but not on
+its closing brace, so every dark theme is served a stray declaration plus a
+lone "}" at top level. The SAC-based parser up to 4.40 recovered from that
+silently; the strict in-house parser of 4.41 throws CssParseException
+("Expected IDENT but found WS"), the ThemeEngine does not catch runtime
+exceptions from a stylesheet, and the theme restore aborts — on startup that
+means "An error has occurred" again (revstyle issue #7). Verified by running
+the 4.41 parser over the generator's output for every dark/light x
+linux/win32/macosx combination: this is the only rejected construct.
+
+Mark the entire block light-only. Light themes receive exactly the text they
+always did; dark themes now receive nothing here instead of junk, which is
+also what the old parser effectively made of it. (Removing the marker from
+the selector line would instead give dark themes the #202425 background the
+block seems to have wanted for the MyEclipse dashboard; this repo prefers
+the behaviour-preserving change.)
+
+Target: com.genuitec.eclipse.theming.css 2025.2.0.202509301431 (resource
+patch — the file is repacked from work/, no compilation involved)
+Context source: the bundle's own css/include/globalstyle.css.
+Details: docs/css-parser-strictness.md
+
+--- a/com.genuitec.eclipse.theming.css/css/include/globalstyle.css
++++ b/com.genuitec.eclipse.theming.css/css/include/globalstyle.css
+@@ -427,10 +427,12 @@
+     swt-unselected-hot-tab-color-background: #161616; /* Bug 465711 */
+ }
+ 
++/* revstyle: the whole block is light-only. The opening line always was, so dark
++   themes used to receive a stray declaration and brace here; the SAC parser of
++   Eclipse <= 4.40 skipped them, the strict parser of 4.41 aborts the stylesheet. */
+ #myeclipse-dashboard-body Composite{ /*LIGHTONLY*/
+-	background-color: #202425; /*DARKONLY*/
+     background-color: #010101; /*LIGHTONLY*/
+-}
++} /*LIGHTONLY*/
+ 
+ #myeclipse-dashboard-body Label{/*LIGHTONLY*/
+     background-color: #010101; /*LIGHTONLY*/

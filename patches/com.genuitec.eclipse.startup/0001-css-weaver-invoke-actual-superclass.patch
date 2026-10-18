@@ -1,0 +1,35 @@
+Fix the Eclipse 2026-09 (4.41) startup crash: DevStyle's CSS-engine weaver
+hardcodes a superclass that no longer exists.
+
+DevStyle's startup bundle registers IgnoreCSSClassPatch, an ASM class weaver
+for org.eclipse.e4.ui.css.swt.engine.CSSSWTEngineImpl. The applyStyles(Object,
+boolean) override it injects ends with an INVOKESPECIAL of the superclass
+method, with the owner spelled out as AbstractCSSSWTEngineImpl. Eclipse 4.41
+collapsed that hierarchy (CSSSWTEngineImpl now extends CSSEngineImpl directly
+and AbstractCSSSWTEngineImpl is gone), so loading the woven class fails with
+NoClassDefFoundError inside ThemeEngineManager.getCSSSWTEngine — before any
+workbench window exists, hence the bare "An error has occurred" dialog
+(upstream report: github.com/Shadows-of-Fire/revstyle issue #7).
+Use the woven ClassNode's own superName as the owner: INVOKESPECIAL resolves
+the inherited method through the actual superclass on every release, so the
+patched weaver is behavior-neutral on 4.40 and earlier.
+
+Target: com.genuitec.eclipse.startup 2025.2.0.202509301431
+Context source: VineFlower 1.12.0 output (--folder --use-lvt-names=1) of the
+bundle jar. Details: docs/css-weaver-superclass.md
+
+--- a/com.genuitec.eclipse.startup/src/com/genuitec/eclipse/startup/patches/IgnoreCSSClassPatch.java
++++ b/com.genuitec.eclipse.startup/src/com/genuitec/eclipse/startup/patches/IgnoreCSSClassPatch.java
+@@ -102,7 +102,11 @@
+       mv.visitVarInsn(25, 0);
+       mv.visitVarInsn(25, 1);
+       mv.visitVarInsn(21, 2);
+-      mv.visitMethodInsn(183, "org/eclipse/e4/ui/css/swt/engine/AbstractCSSSWTEngineImpl", "applyStyles", "(Ljava/lang/Object;Z)V", false);
++      // super.applyStyles(...): invoke on the woven class's actual superclass rather
++      // than a hardcoded name. Eclipse 2026-09 (4.41) removed AbstractCSSSWTEngineImpl
++      // (CSSSWTEngineImpl now extends CSSEngineImpl directly); INVOKESPECIAL resolves
++      // the inherited method either way, so this works on every release.
++      mv.visitMethodInsn(183, cw.superName, "applyStyles", "(Ljava/lang/Object;Z)V", false);
+       Label l13 = new Label();
+       mv.visitLabel(l13);
+       mv.visitLineNumber(112, l13);

@@ -1,0 +1,51 @@
+Fix the DevStyle theme falling apart on Eclipse 2026-09 (4.41): the base
+stylesheets fail to load because their relative @import rules can no longer
+be resolved.
+
+DevStyle's themes are served through its own devstyle: URL scheme
+(devstyle://css/linux.css etc.; the handler substitutes the active color
+theme into the CSS). Each base stylesheet starts with relative imports such
+as @import url("include/basestyle.css"). When the e4 engine resolves such an
+import it first tries the stylesheet's own directory and, if that is not a
+plain file, asks the registered resource locators; the stock engine then
+does new URL(resolve(href)) without a null check. Up to 4.40 DevStyle's
+CSSEngineFixer weaver replaced that engine method with a copy that guards
+the null and falls back to the devstyle: URL. Eclipse 4.41 rewrote the CSS
+core (AbstractCSSEngine and the SAC DOM are gone), the weaver finds nothing
+to weave, and every DevStyle base stylesheet dies with
+"MalformedURLException: Cannot invoke String.length() because spec is null"
+in ThemeEngine.setTheme — three times per start — leaving the workbench with
+thin borders and system-theme backgrounds (revstyle issue #7).
+
+Declare an OSGi resource locator for the bundle's css/ folder on the
+stylesheet element theming.css already contributes. The ThemeEngine registers
+locators from the extension registry in its constructor, so the startup
+restore is covered too. resolve("include/basestyle.css") now yields the
+jar: URL of the real file; it is not a plain file, so the engine keeps the
+devstyle: URL it already built and the import still goes through DevStyle's
+color-substituting handler — the behavior the old weaver produced. On 4.40
+the extra locator is inert for the same reason.
+
+Target: com.genuitec.eclipse.theming.css 2025.2.0.202509301431 (resource
+patch — plugin.xml is repacked from work/, no compilation involved)
+Context source: the bundle's own plugin.xml. Details: docs/css-import-locator.md
+
+--- a/com.genuitec.eclipse.theming.css/plugin.xml
++++ b/com.genuitec.eclipse.theming.css/plugin.xml
+@@ -25,6 +25,16 @@
+          <themeid	
+                refid="org.eclipse.e4.ui.css.theme.e4_dark">	
+          </themeid>	
++         <!-- revstyle: lets the e4 CSS engine resolve the relative @import
++              rules of the DevStyle base stylesheets (include/basestyle.css
++              etc.). Eclipse 2026-09 (4.41) rewrote the engine; its import
++              fallback asks the resource locators and crashes on a null
++              answer, dropping the whole stylesheet. Locators declared here
++              are registered when the engine is built, so even the startup
++              theme restore is covered. -->
++         <osgiresourcelocator
++               uri="platform:/plugin/com.genuitec.eclipse.theming.css/css/">
++         </osgiresourcelocator>
+ 	  </stylesheet>	
+    </extension>
+ </plugin>

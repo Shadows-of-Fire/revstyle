@@ -46,17 +46,20 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            release: "2026-09"   # 4.41 — pristine DevStyle can't even start (CSS-weaver NoClassDefFoundError)
+            negative_control: "css-ncdfe"
+          - os: ubuntu-latest
             release: "2026-06"   # 4.40 — the tab-renderer NPE reproduces headlessly
-            expect_tab_npe: "1"
+            negative_control: "tab-npe"
           - os: ubuntu-latest
             release: "2026-03"   # 4.39 — known bug is silent geometry; pipeline + clean boot only
-            expect_tab_npe: "0"
+            negative_control: "none"
           - os: windows-latest   # Git Bash leg — `shell: bash` IS Git Bash here,
             release: "2026-06"   # the exact environment issue #3 came from
-            expect_tab_npe: "1"
+            negative_control: "tab-npe"
     env:
       ECLIPSE_RELEASE: ${{ matrix.release }}
-      EXPECT_TAB_NPE: ${{ matrix.expect_tab_npe }}
+      NEGATIVE_CONTROL: ${{ matrix.negative_control }}
       # REVSTYLE_CI_SCRATCH is not set here: the `runner` context doesn't
       # exist in job-level env. ci/e2e.sh defaults it to $RUNNER_TEMP/revstyle-e2e,
       # which is the same location the artifact step reads via ${{ runner.temp }}.

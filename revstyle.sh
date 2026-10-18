@@ -80,6 +80,10 @@ cmd_setup() {
 
 cmd_apply() {
   [ -d "$WORK_DIR" ] || die "no work/ tree — run 'setup' first"
+  local bsn
+  for bsn in "${TARGET_BSNS[@]}"; do
+    [ -d "$WORK_DIR/$bsn" ] || die "work/ has no tree for $bsn — re-run 'setup' (the patch targets grew since this work tree was made)"
+  done
   local p applied=0 skipped=0
   while IFS= read -r p; do
     if patch -R -p1 -d "$WORK_DIR" --dry-run -s < "$p" >/dev/null 2>&1; then
@@ -101,14 +105,14 @@ cmd_apply() {
 }
 
 cmd_build() {
-  compile_unit "$UI_BSN" "$UI_SRC_DIR" "$UI_EXPECTED_CLASSES" "${UI_SOURCES[@]}"
-  compile_unit "$SB_BSN" "$SB_SRC_DIR" "$SB_EXPECTED_CLASSES" "${SB_SOURCES[@]}"
+  local t
+  for t in "${PATCH_TARGETS[@]}"; do with_target "$t" compile_unit; done
   log "build complete. Next: ./revstyle.sh pack"
 }
 
 cmd_pack() {
-  pack_bundle "$UI_BSN" "$UI_SRC_DIR"
-  pack_bundle "$SB_BSN" "$SB_SRC_DIR"
+  local t
+  for t in "${PATCH_TARGETS[@]}"; do with_target "$t" pack_bundle; done
   log "pack complete. Next: ./revstyle.sh deploy"
 }
 
@@ -153,8 +157,9 @@ cmd_restore() {
     log "restored pristine $(basename "$jar")"
   done
   log "done. Launch Eclipse once with -clean.
-Hint: pristine DevStyle is broken on Eclipse 2026-06; on 2026-03 you may want
-to re-add '$SCROLLBAR_WORKAROUND' to eclipse.ini."
+Hint: pristine DevStyle is broken on Eclipse 2026-06 and later (2026-09 won't
+even start); on 2026-03 you may want to re-add '$SCROLLBAR_WORKAROUND' to
+eclipse.ini."
 }
 
 cmd_status() {
@@ -193,7 +198,11 @@ cmd_status() {
     fi
   fi
   [ -d "$WORK_DIR" ] && log "work tree       : present" || log "work tree       : absent (run setup)"
-  [ -f "$BUILD_DIR/$UI_BSN.jar" ] && log "packed jars     : present" || log "packed jars     : absent"
+  local packed=0
+  for bsn in "${TARGET_BSNS[@]}"; do [ -f "$BUILD_DIR/$bsn.jar" ] && packed=$((packed+1)); done
+  if [ "$packed" -eq "${#TARGET_BSNS[@]}" ]; then log "packed jars     : present"
+  elif [ "$packed" -eq 0 ]; then log "packed jars     : absent"
+  else log "packed jars     : $packed of ${#TARGET_BSNS[@]} (run pack)"; fi
 }
 
 cmd_all() {

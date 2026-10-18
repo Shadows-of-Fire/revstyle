@@ -8,17 +8,22 @@ journey on an ephemeral runner:
 2. Install pristine DevStyle from Genuitec's **live public p2 site**
    (`https://www.genuitec.com/updates/devstyle/ci/`) via the headless p2
    director.
-3. **Negative control** (Eclipse 2026-06 only): boot the pristine install
-   against a fresh workspace under xvfb and assert the known tab-renderer
-   NPE *does* appear in the workspace log. If the harness can't see the bug,
-   a green run would be meaningless — so this failure is loud and distinct.
+3. **Negative control** (Eclipse 2026-06 and 2026-09): boot the pristine
+   install against a fresh workspace under xvfb and assert the release's
+   known DevStyle failure *does* appear in the workspace log — the
+   tab-renderer NPE on 4.40, the CSS-weaver `NoClassDefFoundError` that
+   aborts startup on 4.41 (`NEGATIVE_CONTROL=tab-npe|css-ncdfe|none`). If the
+   harness can't see the bug, a green run would be meaningless — so this
+   failure is loud and distinct.
 4. Run `./revstyle.sh all` + `deploy`, assert `status` reports every target
    bundle as "patched by revstyle".
 5. **Positive test**: boot the patched install against another fresh
    workspace and assert the log carries no failure signatures (reflection
-   NPEs, `NoSuchField`/`NoSuchMethod`, `LinkageError`, severity-4 Genuitec
-   entries), with an allowlist for noise that is benign on a browserless
-   runner (Oomph's missing-WebKitGTK errors and friends).
+   NPEs, `NoSuchField`/`NoSuchMethod`, `LinkageError`,
+   `NoClassDefFoundError`/`ClassNotFoundException`/`ExceptionInInitializerError`,
+   `Application error`, severity-4 Genuitec entries), with an allowlist for
+   noise that is benign on a browserless runner (Oomph's missing-WebKitGTK
+   errors and friends).
 
 Before any download, `ci/e2e.sh` runs the offline unit test
 `ci/test-bundle-locations.sh`: the three `bundles.info` location shapes
@@ -48,9 +53,10 @@ after quiet stretches (GitHub emails a warning first).
 
 | Runner | Release | Negative control | Why |
 |---|---|---|---|
-| ubuntu-latest | 2026-06 (4.40) | yes | the tab-renderer NPE reproduces headlessly in a fresh workspace |
-| ubuntu-latest | 2026-03 (4.39) | no | its known bug is silent geometry ([scrollbar autoscaling](scrollbar-autoscaling.md)) — invisible in logs, so only pipeline + clean boot are assertable |
-| windows-latest | 2026-06 (4.40) | yes | the Git Bash leg (`shell: bash` on windows runners IS Git Bash — the exact environment of issue #3); win32 EPP zip, `eclipsec.exe` launcher, real desktop session instead of xvfb. Also proves the repacked jars load on win32 SWT ([windows-git-bash.md](windows-git-bash.md)) |
+| ubuntu-latest | 2026-09 (4.41) | `css-ncdfe` | pristine DevStyle aborts startup with the CSS-weaver `NoClassDefFoundError` ([css-weaver-superclass.md](css-weaver-superclass.md)) — loud, headless, before any window |
+| ubuntu-latest | 2026-06 (4.40) | `tab-npe` | the tab-renderer NPE reproduces headlessly in a fresh workspace |
+| ubuntu-latest | 2026-03 (4.39) | `none` | its known bug is silent geometry ([scrollbar autoscaling](scrollbar-autoscaling.md)) — invisible in logs, so only pipeline + clean boot are assertable |
+| windows-latest | 2026-06 (4.40) | `tab-npe` | the Git Bash leg (`shell: bash` on windows runners IS Git Bash — the exact environment of issue #3); win32 EPP zip, `eclipsec.exe` launcher, real desktop session instead of xvfb. Also proves the repacked jars load on win32 SWT ([windows-git-bash.md](windows-git-bash.md)) |
 
 Every leg additionally asserts **repack determinism** (two `pack` runs must
 be byte-identical). The windows leg accepts `E2E_BOOT=0` as a flake escape
@@ -94,15 +100,15 @@ an Eclipse open):
 ```sh
 git worktree add /tmp/revstyle-ci-wt HEAD
 cd /tmp/revstyle-ci-wt
-ECLIPSE_RELEASE=2026-06 EXPECT_TAB_NPE=1 ci/e2e.sh
+ECLIPSE_RELEASE=2026-06 NEGATIVE_CONTROL=tab-npe ci/e2e.sh
 git worktree remove --force /tmp/revstyle-ci-wt
 ```
 
 Without `xvfb-run` installed the script falls back to your real display
 (e.g. WSLg) — Eclipse windows will flash up during the two boot sessions.
 Fault injection: `DEVSTYLE_REPO=https://example.invalid/` exercises the
-dead-vendor-site path; `ECLIPSE_RELEASE=2026-03 EXPECT_TAB_NPE=1` exercises
-the negative-control failure path.
+dead-vendor-site path; `ECLIPSE_RELEASE=2026-03 NEGATIVE_CONTROL=tab-npe`
+exercises the negative-control failure path.
 
 Optional hardening: installing `libwebkit2gtk-4.1-0` on the runner would
 eliminate the Oomph browser noise at the source instead of allowlisting it.

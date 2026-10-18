@@ -2,9 +2,10 @@
 
 This repo repairs the abandoned DevStyle plugin (final release
 2025.2.0.202509301431 — there will never be another) on modern Eclipse by
-patching the user's own installed jars. Eclipse ships quarterly (2026-09/4.41
-is next); DevStyle reflects into SWT/Equinox internals, so expect a new break
-roughly every release. This file is the playbook for that event.
+patching the user's own installed jars. Eclipse ships quarterly (2026-12/4.42
+is next); DevStyle reflects into SWT/Equinox internals and weaves bytecode
+into e4, so expect a new break roughly every release. This file is the
+playbook for that event.
 
 ## Hard invariants
 
@@ -41,6 +42,13 @@ roughly every release. This file is the playbook for that event.
    root. `resolve_eclipse` handles all of this; `--config` overrides. Compare members with `javap -p` first, then
    VineFlower-decompile the specific classes from both jars and diff
    (pre-create package dirs; VineFlower's `--only` saver doesn't mkdir).
+   **Sweep first, then dig**: `lib/refsweep.py <extracted DevStyle classes>
+   <old plugins/> <new plugins/>` lists every platform class DevStyle's
+   constant pools reference (direct refs, descriptors, *and* string
+   constants — the ASM weavers name their targets in strings) that exists in
+   the old release and not the new one. On 4.41 it found all four broken
+   bundles in one pass (issue #7). Member-level removals (fields/methods
+   reached by reflection) still need `javap -p` diffs.
 3. **Known DevStyle failure modes**, ranked by past incidents:
    - Reflection into private SWT fields/methods that got removed
      (4.37 `DPIUtil.autoScaleDown`, 4.40 `CTabFolderRenderer` curve fields).
@@ -53,6 +61,36 @@ roughly every release. This file is the playbook for that event.
      adapter misbehaves with no exception. Fix pattern: copy the field from
      the adapted widget in `createAdapter` before `createWidget` (see the
      `autoscalingMode` patch).
+   - **ASM weavers that hardcode platform class names in the bytecode they
+     emit** (`com.genuitec.eclipse.patches.extensions` class-weavers in
+     `startup`, `theming.core`; class-replacements in `theming.epl`). A removed
+     superclass surfaces as `NoClassDefFoundError` at the *woven* class's first
+     use, deep inside e4 and nowhere near DevStyle code (4.41
+     `IgnoreCSSClassPatch` → `ThemeEngineManager.getCSSSWTEngine`). Fix
+     pattern: derive names from the `ClassNode` (`cw.superName`). A weaver whose
+     `woven-class` itself vanished (4.41 `CSSEngineFixer` on
+     `AbstractCSSEngine`) is silently inert — lost behavior, no exception.
+   - **e4 CSS engine internals** — the 4.41 rewrite replaced the SAC DOM with
+     an in-house parser. DevStyle serves its CSS through its own `devstyle:`
+     URL scheme (color substitution) and relied on a weaver to null-guard
+     relative `@import` resolution; the stock fallback asks the
+     `IResourceLocator`s and does `new URL(null)` when none answers. Fixed
+     declaratively with an `osgiresourcelocator` in `theming.css`
+     (docs/css-import-locator.md). Any future "theme half applied" with
+     `MalformedURLException ... "spec" is null` is this family.
+     The 4.41 parser is also **strict**, and the `devstyle:` generator
+     **drops whole marker lines** (`/*LIGHTONLY*/` etc.) before parsing — a
+     marker on a line with a brace unbalances the served text and a
+     `CssParseException` from the startup restore kills Eclipse. Never judge
+     DevStyle CSS by the jar files: run `lib/CssParseProbe.java` (emulates the
+     dropping per theme/OS combo, parses with the install's real engine) over
+     `work/**/css` for all seven combos before shipping a CSS resource patch
+     (docs/css-parser-strictness.md).
+   - **Static initializers touching removed platform classes** (4.41
+     `PlatformUtil` → `PluginVersionIdentifier`): the whole class fails to
+     load for every caller, however unrelated the method they wanted. Fix
+     pattern: drop the member; check for callers with a constant-pool grep
+     across all bundles first.
    - `com.genuitec.eclipse.patches` (start-level 2 weaving engine): couples to
      Equinox internals (`HookRegistry`, `ModuleClassLoader`, `ClasspathManager`)
      and ASM 5 — suspect it for *startup* failures rather than rendering ones.
@@ -76,11 +114,16 @@ roughly every release. This file is the playbook for that event.
    sources, never the decompiled twin.
 2. Edit `work/` sources minimally (match existing style; guard, don't
    restructure). Keep fixes tolerant of older SWT (best-effort reflection).
-3. If a new bundle joins the pipeline: add its BSN/sources/expected-class
-   count to `lib/common.sh` (`TARGET_BSNS`, `*_SOURCES`, `*_EXPECTED_CLASSES`)
-   and wire `cmd_build`/`cmd_pack` in `revstyle.sh`. Remember: recompiling an
-   outer class regenerates ALL its nested classes — the expected count is the
-   jar's full `Outer*.class` entry set, and pack must replace them together.
+3. If a new bundle joins the pipeline: add one line to `PATCH_TARGETS` in
+   `lib/common.sh` (`<bsn>|<package dir>|<expected class count>|<sources>|<resources>`);
+   `setup`/`apply`/`build`/`pack`/`deploy`/`restore`/`status` and the CI
+   assertions all iterate it. Remember: recompiling an outer class
+   regenerates ALL its nested classes — the expected count is the jar's full
+   `Outer*.class` entry set, and pack replaces them together. A fix that
+   lives in bundle metadata rather than code (4.41 `theming.css` plugin.xml)
+   is a **resource target**: leave sources empty, list the jar-relative
+   files; `apply` patches them in `work/<bsn>/` and `pack` copies them in.
+   Users with an older `work/` must re-run `setup` (`apply` tells them).
 4. Regenerate patches from a **fresh pristine** work tree:
    re-run `setup` into a clean `work/`, then
    `diff -u --label a/<rel> --label b/<rel> <pristine> <patched>` per file,

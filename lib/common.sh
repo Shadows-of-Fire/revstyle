@@ -5,9 +5,6 @@ set -euo pipefail
 
 # ---------------------------------------------------------------- constants
 DEVSTYLE_VERSION="2025.2.0.202509301431"   # the last DevStyle release ever shipped
-UI_BSN="com.genuitec.eclipse.theming.ui"
-SB_BSN="com.genuitec.eclipse.theming.scrollbar"
-TARGET_BSNS=("$UI_BSN" "$SB_BSN")
 
 # Manifest main-attribute stamped into every revstyle-repacked jar (pack_bundle);
 # its presence is the sole discriminator of patched vs pristine jars.
@@ -25,13 +22,34 @@ VF_SHA256="1dfcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d"
 # to VineFlower ${VF_VERSION} output produced with exactly these flags.
 VF_FLAGS=(--folder --use-lvt-names=1)
 
-# Class files each compile unit must produce (used to catch decompiler drift).
-UI_SRC_DIR="com/genuitec/eclipse/theming/ui/rendering"
-UI_SOURCES=(SquareTabRenderer.java DashboardSquareTabRenderer.java)
-UI_EXPECTED_CLASSES=8
-SB_SRC_DIR="com/codeaffine/eclipse/swt/widget/scrollable"
-SB_SOURCES=(ScrollableAdapterFactory.java)
-SB_EXPECTED_CLASSES=2
+# Patch targets — one entry per bundle revstyle rewrites, in the form
+#   <bsn>|<package dir of the patched sources>|<expected .class count>|<source files>|<resource files>
+# Sources are compiled; resources (jar-relative, e.g. plugin.xml) are taken
+# verbatim from the patched work/<bsn>/ tree — for fixes that live in a
+# bundle's metadata rather than its classes. Either list may be empty.
+# The class count is the jar's full Outer*.class set for those sources: javac
+# regenerates every nested class of a recompiled outer class and pack replaces
+# the whole set, so a count mismatch means decompiler or source drift. Adding
+# a bundle here is all the wiring a new fix needs (plus its patches/<bsn>/).
+PATCH_TARGETS=(
+  "com.genuitec.eclipse.theming.ui|com/genuitec/eclipse/theming/ui/rendering|8|SquareTabRenderer.java DashboardSquareTabRenderer.java|"
+  "com.genuitec.eclipse.theming.scrollbar|com/codeaffine/eclipse/swt/widget/scrollable|2|ScrollableAdapterFactory.java|"
+  "com.genuitec.eclipse.startup|com/genuitec/eclipse/startup/patches|1|IgnoreCSSClassPatch.java|"
+  "com.genuitec.eclipse.core.common.platform|com/genuitec/eclipse/core/util|1|PlatformUtil.java|"
+  "com.genuitec.eclipse.theming.css||||plugin.xml css/include/globalstyle.css"
+)
+TARGET_BSNS=()
+for _t in "${PATCH_TARGETS[@]}"; do TARGET_BSNS+=("${_t%%|*}"); done
+unset _t
+
+# with_target <entry> <fn> — split a PATCH_TARGETS entry and call
+# fn <bsn> <src-subdir> <expected-count> "<sources>" "<resources>"
+# (the two lists stay single space-separated words; callers split them)
+with_target() {
+  local entry=$1 fn=$2 bsn subdir expected sources resources
+  IFS='|' read -r bsn subdir expected sources resources <<< "$entry"
+  "$fn" "$bsn" "$subdir" "${expected:-0}" "$sources" "$resources"
+}
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS_DIR="$REPO_DIR/tools"
@@ -367,13 +385,21 @@ classpath_for() {
   }
 }
 
-# compile_unit <bsn> <src-subdir> <expected-count> <sources...>
+# compile_unit <bsn> <src-subdir> <expected-count> "<sources>" ["<resources>"]
 compile_unit() {
-  local bsn=$1 subdir=$2 expected=$3; shift 3
+  local bsn=$1 subdir=$2 expected=$3 sources=$4
   local srcroot="$WORK_DIR/$bsn/src" out="$BUILD_DIR/classes/$bsn" cp produced s
+  local names=()
+  # (read -ra on an empty string yields no elements, but guard anyway so a
+  # whitespace-only field can never masquerade as a source file)
+  [ -n "${sources// /}" ] && read -ra names <<< "$sources"
+  if [ ${#names[@]} -eq 0 ]; then
+    log "nothing to compile for $bsn (resource-only target)"
+    return 0
+  fi
   [ -d "$srcroot/$subdir" ] || die "missing sources for $bsn — run 'setup' (and 'apply') first"
   local files=()
-  for s in "$@"; do files+=("$srcroot/$subdir/$s"); done
+  for s in "${names[@]}"; do files+=("$srcroot/$subdir/$s"); done
   rm -rf "$out"
   mkdir -p "$out"
   cp=$(classpath_for "$(backup_jar_path "$bsn")")
@@ -391,27 +417,41 @@ compile_unit() {
     printf -- '-d "%s"\n' "$(native_path "$out")"
     for s in "${files[@]}"; do printf -- '"%s"\n' "$(native_path "$s")"; done
   } > "$argfile"
-  javac "@$(native_path "$argfile")" \
-    || die "compilation failed for $bsn (did 'apply' succeed? is the Eclipse install the version the patches target?)"
+  if ! javac "@$(native_path "$argfile")"; then
+    rm -rf "$out"   # never leave a half-built class dir for pack to trip over
+    die "compilation failed for $bsn (did 'apply' succeed? is the Eclipse install the version the patches target?)"
+  fi
   produced=$(find "$out" -name '*.class' | wc -l)
   [ "$produced" -eq "$expected" ] || die "$bsn produced $produced class files, expected $expected — decompiler or source drift"
   log "compiled $bsn: $produced class files"
 }
 
-# pack_bundle <bsn> <class-subdir> — repack pristine jar with patched classes.
+# pack_bundle <bsn> <class-subdir> <expected> "<sources>" "<resources>" —
+# repack the pristine jar with the patched classes (when the target has
+# sources) and/or the patched resource files from work/<bsn>/.
 # The vendor signature must be stripped (edited entries would fail verification)
 # and MANIFEST.MF reduced to its main section, because per-entry digest sections
 # would reference the old bytes. NB: 'jar --update --manifest' MERGES with an
 # existing in-jar manifest, so the old manifest is deleted from the zip first.
 pack_bundle() {
-  local bsn=$1 subdir=$2
-  local pristine out manifest classes entry
+  local bsn=$1 subdir=$2 sources=$4 resources=$5
+  local pristine out manifest classes entry r
+  local names=() res=()
+  [ -n "${sources// /}" ] && read -ra names <<< "$sources"
+  [ -n "${resources// /}" ] && read -ra res <<< "$resources"
   pristine=$(backup_jar_path "$bsn")
   [ -f "$pristine" ] || die "no pristine backup for $bsn — run 'setup' first"
   out="$BUILD_DIR/$bsn.jar"
   manifest="$BUILD_DIR/$bsn.MF"
   classes="$BUILD_DIR/classes/$bsn"
-  [ -d "$classes" ] || die "no compiled classes for $bsn — run 'build' first"
+  if [ ${#names[@]} -gt 0 ]; then
+    # an empty class dir would hand jar an unexpanded glob and errexit the
+    # script half-way through the repack — demand real class files
+    compgen -G "$classes/$subdir/*.class" >/dev/null || die "no compiled classes for $bsn — run 'build' first"
+  fi
+  for r in "${res[@]}"; do
+    [ -f "$WORK_DIR/$bsn/$r" ] || die "missing resource $r in work/$bsn — run 'setup' and 'apply' first"
+  done
   mkdir -p "$BUILD_DIR"
   cp "$pristine" "$out"
   # main section only, minus its terminating blank line, so the appended marker
@@ -425,12 +465,18 @@ pack_bundle() {
   java "$(native_path "$REPO_DIR/lib/StripSignatures.java")" "$(native_path "$out")" \
     || die "signature strip failed for $bsn"
   jar --update --file "$(native_path "$out")" --manifest "$(native_path "$manifest")"
-  (cd "$classes" && jar --update --file "$(native_path "$out")" "$subdir"/*.class)
-  # jar stamps the manifest entry with "now" and class entries with build
-  # mtimes — pin exactly the entries we rewrote so repacks carry no wall-clock
-  # (see PACK_MTIME); untouched pristine entries keep their original headers
   local pin=(META-INF/MANIFEST.MF) f
-  for f in "$classes/$subdir"/*.class; do pin+=("$subdir/$(basename "$f")"); done
+  if [ ${#names[@]} -gt 0 ]; then
+    (cd "$classes" && jar --update --file "$(native_path "$out")" "$subdir"/*.class)
+    for f in "$classes/$subdir"/*.class; do pin+=("$subdir/$(basename "$f")"); done
+  fi
+  if [ ${#res[@]} -gt 0 ]; then
+    (cd "$WORK_DIR/$bsn" && jar --update --file "$(native_path "$out")" "${res[@]}")
+    pin+=("${res[@]}")
+  fi
+  # jar stamps the manifest entry with "now" and class/resource entries with
+  # file mtimes — pin exactly the entries we rewrote so repacks carry no
+  # wall-clock (see PACK_MTIME); untouched pristine entries keep their headers
   java -Duser.timezone=UTC "$(native_path "$REPO_DIR/lib/PinEntryTimes.java")" \
     "$(native_path "$out")" "$PACK_MTIME" "${pin[@]}" \
     || die "timestamp pinning failed for $bsn"

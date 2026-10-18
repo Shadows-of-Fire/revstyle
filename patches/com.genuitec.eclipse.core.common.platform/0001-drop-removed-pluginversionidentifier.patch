@@ -1,0 +1,57 @@
+Context source: VineFlower 1.12.0 output (--folder --use-lvt-names=1) of the
+bundle jar; the toArray cast only repairs a decompiler artifact (a raw Vector
+loses its element type) so the file compiles unchanged in behavior.
+Details: docs/platformutil-class-init.md
+
+--- a/com.genuitec.eclipse.core.common.platform/src/com/genuitec/eclipse/core/util/PlatformUtil.java
++++ b/com.genuitec.eclipse.core.common.platform/src/com/genuitec/eclipse/core/util/PlatformUtil.java
+@@ -48,7 +48,6 @@
+ import org.eclipse.core.runtime.Platform;
+ import org.eclipse.core.runtime.PlatformObject;
+ import org.eclipse.core.runtime.Plugin;
+-import org.eclipse.core.runtime.PluginVersionIdentifier;
+ import org.eclipse.core.runtime.SubMonitor;
+ import org.eclipse.core.runtime.content.IContentDescription;
+ import org.eclipse.core.runtime.content.IContentType;
+@@ -62,7 +61,6 @@
+    public static String PREF_EXPERIMENTAL_ENABLED = "experimentalEnabled";
+    private static String LINUX_EXPERIMENTAL = "linux.experimental";
+    private static String MAC_EXPERIMENTAL = "mac.experimental";
+-   private static PluginVersionIdentifier UNDEFINED_PRODUCT_VERSION = new PluginVersionIdentifier(0, 0, 0, "");
+ 
+    public static String getPluginOSPathString(Plugin thePlugin) {
+       return getPluginOSPathString(thePlugin, null);
+@@ -189,7 +187,8 @@
+          v.add(toker.nextElement());
+       }
+ 
+-      return v.toArray(new String[v.size()]);
++      // decompiler artifact: v is a raw Vector here, so javac needs the cast
++      return (String[])v.toArray(new String[v.size()]);
+    }
+ 
+    public static void copyFile(File sourceFile, File destinationFile) throws IOException {
+@@ -651,23 +650,6 @@
+       return product != null ? product.getId() : null;
+    }
+ 
+-   public static PluginVersionIdentifier getProductVersion() {
+-      IProduct product = Platform.getProduct();
+-      if (product == null) {
+-         return UNDEFINED_PRODUCT_VERSION;
+-      }
+-
+-      Bundle productBundle = product.getDefiningBundle();
+-      if (productBundle == null) {
+-         return UNDEFINED_PRODUCT_VERSION;
+-      }
+-
+-      Version productVersion = productBundle.getVersion();
+-      return productVersion == null
+-         ? UNDEFINED_PRODUCT_VERSION
+-         : new PluginVersionIdentifier(productVersion.getMajor(), productVersion.getMinor(), productVersion.getMicro(), productVersion.getQualifier());
+-   }
+-
+    public static boolean hasBlue() {
+       return getBundle("com.genuitec.eclipse.blue.websphere.core") != null;
+    }
