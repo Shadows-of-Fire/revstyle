@@ -47,6 +47,13 @@ under `~/.eclipse/` — revstyle detects and uses it automatically (launch
 Eclipse at least once first so the area exists). `--config <dir>` overrides
 the detection if ever needed.
 
+**Eclipse Installer (Oomph) installs with a shared bundle pool** (the
+installer's default layout, pool under `~/.p2/pool`): also supported. Such
+installs list their bundles in `bundles.info` as `file:` URIs pointing into
+the pool; revstyle resolves them (`status` reports "in shared p2 pool") and
+patches the jars **in the pool** — so every Eclipse install that shares the
+pool picks up the patched bundles, and `restore` likewise affects them all.
+
 Then start Eclipse once with `-clean` (e.g. `eclipse -clean`) so the OSGi
 cache picks up the modified bundles. Undo at any time with
 `./revstyle.sh restore`.

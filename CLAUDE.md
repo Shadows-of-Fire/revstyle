@@ -108,6 +108,16 @@ roughly every release. This file is the playbook for that event.
   always start from the pristine backup, never from `plugins/`.
 - Same filename + `Bundle-Version` on deploy keeps `bundles.info`/p2 happy;
   `artifacts.xml` stores no checksums for these artifacts.
+- **`bundles.info` column 3 has three shapes**: install-relative
+  `plugins/x.jar` (classic), absolute POSIX, and percent-encoded `file:` URIs
+  into a shared p2 pool (Eclipse Installer/Oomph layouts —
+  `file:/C:/Users/…/.p2/pool/plugins/x.jar` on Windows; PRs #5/#6).
+  `resolve_bundle_location` is the single bash-side resolver (drive-letter
+  slash stripped, `cygpath -u` on MSYS); `classpath_for` carries a
+  deliberately **subprocess-free awk twin** of the same rules — one `cygpath`
+  per entry would cost tens of seconds on Windows, and `C:/…` is already the
+  native form javac wants. Change both together and run
+  `ci/test-bundle-locations.sh` (also the first stage of `ci/e2e.sh`).
 - Always `-clean` after swapping a jar, or Equinox serves cached bytes.
 - `eclipse_running` uses `pgrep -x`; a `-f` substring match catches your own
   command line. It asks Windows (`tasklist.exe`) only when `ECLIPSE_HOME` is

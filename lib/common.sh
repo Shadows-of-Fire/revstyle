@@ -136,16 +136,66 @@ bundle_version() {
   bundle_info_line "$1" | cut -d, -f2
 }
 
+# percent_decode <s> — undo URI percent-encoding (%20 -> space, %C3%A9 -> é).
+# bundles.info stores file: locations as URIs, so a pool under "Program Files"
+# arrives as Program%20Files. Only %XX escapes are decoded (no '+' handling —
+# that is form encoding, not path encoding).
+percent_decode() {
+  local s=$1 out="" byte
+  # Strict: only %XX with two hex digits is an escape; anything else stays
+  # verbatim (no printf warnings on a stray '%'). Consumed from the right so
+  # multi-byte sequences (%C3%A9) come out in order; printf's \xHH yields the
+  # raw byte, so UTF-8 survives untouched regardless of locale.
+  while [[ $s =~ ^(.*)%([0-9A-Fa-f][0-9A-Fa-f])(.*)$ ]]; do
+    printf -v byte '%b' "\\x${BASH_REMATCH[2]}"
+    out="$byte${BASH_REMATCH[3]}$out"
+    s=${BASH_REMATCH[1]}
+  done
+  printf '%s\n' "$s$out"
+}
+
+# resolve_bundle_location <loc> — bundles.info column 3 to an absolute path in
+# bash-side form (MSYS /c/... under Git Bash, POSIX elsewhere). Three shapes
+# occur in the wild (issue #5/#6 PRs):
+#   plugins/foo.jar                            relative to the install area
+#   /opt/eclipse/plugins/foo.jar               absolute POSIX path
+#   file:/C:/Users/x/.p2/pool/plugins/foo.jar  file: URI — installs made by the
+#   file:/home/x/.p2/pool/plugins/foo.jar      Eclipse Installer (Oomph) keep
+#                                              bundles in a shared p2 pool
+#                                              outside the install area
+# The URI form is percent-encoded and may carry a Windows drive letter behind
+# the URI's leading slash (/C:/...) — strip that slash and convert to the MSYS
+# form so bash-side tools (cp, unzip, patch) can use the path. classpath_for
+# has an awk twin of this logic; keep the two in step.
+resolve_bundle_location() {
+  local loc=$1
+  case "$loc" in
+    file:*)
+      loc=${loc#file:}
+      loc=$(percent_decode "$loc")
+      case "$loc" in ///*) loc=${loc#//} ;; esac        # file:///C:/x -> /C:/x (keep //host/share)
+      case "$loc" in /[A-Za-z]:*) loc=${loc#/} ;; esac  # /C:/x -> C:/x
+      if is_msys; then loc=$(cygpath -u -- "$loc"); fi
+      printf '%s\n' "$loc" ;;
+    /*) printf '%s\n' "$loc" ;;
+    *)  printf '%s/%s\n' "$ECLIPSE_HOME" "$loc" ;;
+  esac
+}
+
 # bundle_jar <bsn> — absolute path of the ACTIVE jar for a bundle. bundles.info
 # is the source of truth: installs updated in place keep stale older jars on disk.
 bundle_jar() {
   local rel
   rel=$(bundle_info_line "$1" | cut -d, -f3) || return 1
-  case "$rel" in
-    /*)        printf '%s\n' "$rel" ;;
-    file:*)    die "unsupported bundle location '$rel' in bundles.info" ;;
-    *)         printf '%s/%s\n' "$ECLIPSE_HOME" "$rel" ;;
-  esac
+  resolve_bundle_location "$rel"
+}
+
+# bundle_in_pool <bsn> — true when the active jar lives outside the install
+# area (shared p2 pool): patching it affects every install that shares the pool
+bundle_in_pool() {
+  local jar
+  jar=$(bundle_jar "$1") || return 1
+  case "$jar" in "$ECLIPSE_HOME"/*) return 1 ;; *) return 0 ;; esac
 }
 
 # bundle_on_disk <bsn> — a matching jar exists under the install's or the
@@ -271,15 +321,49 @@ extract_bundle_project() {
 # classpath_for <pristine-jar> — pristine target jar first (unpatched classes
 # resolve from it), then every active bundle jar from bundles.info
 classpath_for() {
-  # entries in native form with the platform separator — this string is consumed
-  # by javac (a native tool under Git Bash); bundles.info paths are relative, so
-  # only the two absolute prefixes need converting
+  # Entries in native form with the platform separator — this string is consumed
+  # by javac (a native tool under Git Bash). One awk pass over the 500-1000
+  # entries, deliberately with no per-entry subprocess (a cygpath per entry
+  # costs tens of seconds on Windows). Same three location shapes as
+  # resolve_bundle_location, reaching native form without cygpath:
+  #   relative          -> native install prefix + "/" + entry
+  #   file:/C:/...      -> C:/... (native once the URI's extra slash goes)
+  #   /abs or file:/abs -> only produced by POSIX p2, where native == POSIX
+  # LC_ALL=C so sprintf("%c") emits raw bytes while percent-decoding — UTF-8
+  # sequences (%C3%A9) must come out as the original bytes, not re-encoded.
   local first ecl
   first=$(native_path "$1")
   ecl=$(native_path "$ECLIPSE_HOME")
   {
     printf '%s' "$first"
-    awk -F, -v ecl="$ecl" -v sep="$CP_SEP" '!/^#/ && $3 ~ /\.jar$/ {printf "%s%s/%s", sep, ecl, $3}' "$BUNDLES_INFO"
+    LC_ALL=C awk -F, -v ecl="$ecl" -v sep="$CP_SEP" '
+      BEGIN { for (i = 0; i < 16; i++) { hex[sprintf("%x", i)] = i; hex[sprintf("%X", i)] = i } }
+      function decode(s,    out, i, h1, h2) {
+        out = ""
+        while ((i = index(s, "%")) > 0) {
+          h1 = substr(s, i + 1, 1); h2 = substr(s, i + 2, 1)
+          if ((h1 in hex) && (h2 in hex)) {
+            out = out substr(s, 1, i - 1) sprintf("%c", hex[h1] * 16 + hex[h2])
+            s = substr(s, i + 3)
+          } else {
+            out = out substr(s, 1, i)
+            s = substr(s, i + 1)
+          }
+        }
+        return out s
+      }
+      !/^#/ && $3 ~ /\.jar$/ {
+        p = $3
+        if (p ~ /^file:/) {
+          sub(/^file:/, "", p)
+          p = decode(p)
+          sub(/^\/\/\//, "/", p)
+          if (p ~ /^\/[A-Za-z]:/) p = substr(p, 2)
+        } else if (p !~ /^\//) {
+          p = ecl "/" p
+        }
+        printf "%s%s", sep, p
+      }' "$BUNDLES_INFO"
   }
 }
 

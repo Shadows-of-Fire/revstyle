@@ -89,6 +89,19 @@ package thing), so this path is rarely taken; pass `--config <dir>` if you
 ever hit it. Cheap future improvement: also try
 `java_str_hash "$(cygpath -w "$ECLIPSE_HOME")"` as a candidate.
 
+## Shared p2 pool installs
+
+Installs created by the Eclipse Installer keep their bundles in a shared pool
+and reference them in `bundles.info` as percent-encoded URIs such as
+`file:/C:/Users/<you>/.p2/pool/plugins/….jar` (the regression from the
+original PR #5/#6 reports). `resolve_bundle_location` strips the URI's extra
+leading slash, percent-decodes (`Program%20Files`), and runs the result
+through `cygpath -u` so bash-side tools see `/c/Users/…`. `classpath_for`
+needs no `cygpath` at all: `C:/…` after the strip is already the mixed form
+javac accepts, which keeps the 500–1000-entry classpath build free of
+per-entry processes. `ci/test-bundle-locations.sh` checks all shapes, and the
+windows-latest CI leg runs it under real Git Bash.
+
 ## Troubleshooting
 
 - **`deploy` fails copying jars** → Eclipse is running and Windows holds the

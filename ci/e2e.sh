@@ -345,6 +345,12 @@ if is_msys; then
 else
   require_cmd tar pgrep pkill
 fi
+# Offline guard before any download: the bundles.info location shapes
+# (classic relative, absolute, shared-p2-pool file: URIs). On windows-latest
+# this runs under real Git Bash + cygpath. A failure here is a revstyle
+# regression, never the vendor's.
+bash ci/test-bundle-locations.sh \
+  || die "[unit-failed] bundles.info location-shape unit test failed — see the check lines above"
 mkdir -p "$REVSTYLE_CI_SCRATCH" "$LOGS_DIR"
 log "scratch: $REVSTYLE_CI_SCRATCH (Eclipse $ECLIPSE_RELEASE, negative control: $EXPECT_TAB_NPE)"
 

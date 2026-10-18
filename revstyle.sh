@@ -123,6 +123,9 @@ cmd_deploy() {
     jar=$(bundle_jar "$bsn")
     cp "$out" "$jar"
     log "deployed $(basename "$jar")"
+    if bundle_in_pool "$bsn"; then
+      log "  note: that jar lives in a shared p2 bundle pool ($(dirname "$jar")) — every Eclipse install sharing the pool now runs the patched bundle"
+    fi
   done
   if ini=$(eclipse_ini_path) && grep -q -- "$SCROLLBAR_WORKAROUND" "$ini"; then
     if [ -w "$ini" ]; then
@@ -178,6 +181,7 @@ cmd_status() {
     fi
     backup="$BACKUPS_DIR/$(basename "$jar")"
     [ -f "$backup" ] && state="$state, backup present"
+    bundle_in_pool "$bsn" && state="$state, in shared p2 pool"
     log "$bsn : $ver — $state"
   done
   local ini

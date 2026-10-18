@@ -20,6 +20,13 @@ journey on an ephemeral runner:
    entries), with an allowlist for noise that is benign on a browserless
    runner (Oomph's missing-WebKitGTK errors and friends).
 
+Before any download, `ci/e2e.sh` runs the offline unit test
+`ci/test-bundle-locations.sh`: the three `bundles.info` location shapes
+(install-relative, absolute, and the percent-encoded shared-p2-pool `file:`
+URIs that Eclipse-Installer installs write) must resolve correctly in
+`bundle_jar` and `classpath_for`. The windows leg runs it under real Git Bash
+with real `cygpath`.
+
 All logic lives in `ci/e2e.sh`; the workflow is a thin matrix/cache/artifact
 shell around it.
 
@@ -70,6 +77,7 @@ Every failure exits with a bracketed stage tag in the job summary:
 | `[boot-crashed]` / `[boot-timeout]` | Eclipse died or hung before writing a workspace log | Read the `*-launcher.log` artifact; likely runner/environment trouble. On windows-latest also suspect Defender slowness (first-boot jar scans) — re-run before digging; recurrent → set `E2E_BOOT=0` |
 | `[pack-nondeterministic]` | Two `pack` runs differed | A wall-clock leak in the repack path (see `lib/PinEntryTimes.java`); compare the `pack*.sha256` artifacts |
 | `[negative-control-failed]` | Pristine DevStyle no longer exhibits the known bug | **Fix the harness first** — green positives are untrustworthy until it detects the bug again |
+| `[unit-failed]` | `ci/test-bundle-locations.sh` failed (bundles.info location shapes) | A revstyle regression in `resolve_bundle_location`/`classpath_for`; the check lines above the tag name the shape. Reproduce with `bash ci/test-bundle-locations.sh` |
 | `[pipeline-failed]` | `revstyle.sh all`/`deploy` failed | A real revstyle regression; reproduce locally |
 | `[deploy-not-patched]` | `status` doesn't report the bundles as patched | Marker/deploy logic regression; see `status.txt` artifact |
 | `[positive-test-failed]` | Patched install logs failure signatures | Likely a **new Eclipse/DevStyle breakage** — start at the CLAUDE.md diagnosis playbook; evidence is in `patched-workspace.log` and `positive-failures.txt` |
